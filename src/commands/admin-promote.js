@@ -5,6 +5,8 @@
 
 import { normalizePhoneNumber } from '../utils/phone.js';
 import { logModerationAction } from '../permissions-new.js';
+import { getGroupMeta } from '../permissions.js';
+import { dbRows } from '../db.js';
 
 export default [
   {
@@ -32,14 +34,14 @@ export default [
       const jid = `${normalized}@s.whatsapp.net`;
 
       try {
-        // Alle verwalteten Gruppen abrufen (nutze ctx.db oder ctx.database)
-        const groups = await (ctx.db?.all?.(
-          'SELECT jid FROM group_settings WHERE enabled = 1',
+        // Alle Gruppen abrufen (nicht nur enabled = 1!)
+        const groups = await dbRows(
+          'SELECT jid FROM groups WHERE jid LIKE "%@g.us"',
           []
-        ) || Promise.resolve([]));
+        );
 
         if (!groups || !groups.length) {
-          return ctx.reply('⚠️ Keine verwalteten Gruppen gefunden');
+          return ctx.reply('⚠️ Keine Gruppen gefunden');
         }
 
         let promoted = 0;
@@ -49,22 +51,16 @@ export default [
         // In jeder Gruppe versuchen
         for (const row of groups) {
           try {
-            // Nutze ctx.getGroupMeta oder ctx.sock.groupMetadata
-            let meta;
-            if (ctx.getGroupMeta) {
-              meta = await ctx.getGroupMeta(row.jid);
-            } else if (ctx.sock?.groupMetadata) {
-              meta = await ctx.sock.groupMetadata(row.jid);
-            }
-
-            if (!meta) {
+            // Nutze getGroupMeta aus permissions.js
+            const meta = await getGroupMeta(row.jid);
+            if (!meta || !meta.participants) {
               skipped++;
               continue;
             }
 
             // Prüfen ob Bot Admin ist
-            const botJid = ctx.botJid || (await ctx.sock?.getBotJid?.());
-            const botIsAdmin = meta.participants?.some(
+            const botJid = ctx.socket?.user?.id || ctx.botJid;
+            const botIsAdmin = meta.participants.some(
               (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -74,7 +70,7 @@ export default [
             }
 
             // Prüfen ob Nutzer bereits Admin ist
-            const isAdmin = meta.participants?.some(
+            const isAdmin = meta.participants.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -83,13 +79,16 @@ export default [
               continue;
             }
 
-            // Zum Admin machen
-            if (ctx.sock?.groupParticipantsUpdate) {
-              await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'promote');
-              promoted++;
-            } else {
-              failed++;
+            // Prüfen ob Nutzer überhaupt in der Gruppe ist
+            const userInGroup = meta.participants.some((p) => p.id === jid);
+            if (!userInGroup) {
+              skipped++;
+              continue;
             }
+
+            // Zum Admin machen
+            await ctx.socket.groupParticipantsUpdate(row.jid, [jid], 'promote');
+            promoted++;
           } catch (err) {
             console.error(`Error promoting in group ${row.jid}:`, err);
             failed++;
@@ -116,7 +115,7 @@ export default [
         );
       } catch (err) {
         console.error('Error in admin command:', err);
-        ctx.reply('❌ Fehler beim Durchführen der Aktion: ' + err.message);
+        ctx.reply('❌ Fehler: ' + err.message);
       }
     },
   },
@@ -145,14 +144,14 @@ export default [
       const jid = `${normalized}@s.whatsapp.net`;
 
       try {
-        // Alle verwalteten Gruppen abrufen
-        const groups = await (ctx.db?.all?.(
-          'SELECT jid FROM group_settings WHERE enabled = 1',
+        // Alle Gruppen abrufen
+        const groups = await dbRows(
+          'SELECT jid FROM groups WHERE jid LIKE "%@g.us"',
           []
-        ) || Promise.resolve([]));
+        );
 
         if (!groups || !groups.length) {
-          return ctx.reply('⚠️ Keine verwalteten Gruppen gefunden');
+          return ctx.reply('⚠️ Keine Gruppen gefunden');
         }
 
         let demoted = 0;
@@ -162,22 +161,15 @@ export default [
         // In jeder Gruppe versuchen
         for (const row of groups) {
           try {
-            // Nutze ctx.getGroupMeta oder ctx.sock.groupMetadata
-            let meta;
-            if (ctx.getGroupMeta) {
-              meta = await ctx.getGroupMeta(row.jid);
-            } else if (ctx.sock?.groupMetadata) {
-              meta = await ctx.sock.groupMetadata(row.jid);
-            }
-
-            if (!meta) {
+            const meta = await getGroupMeta(row.jid);
+            if (!meta || !meta.participants) {
               skipped++;
               continue;
             }
 
             // Prüfen ob Bot Admin ist
-            const botJid = ctx.botJid || (await ctx.sock?.getBotJid?.());
-            const botIsAdmin = meta.participants?.some(
+            const botJid = ctx.socket?.user?.id || ctx.botJid;
+            const botIsAdmin = meta.participants.some(
               (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -187,7 +179,7 @@ export default [
             }
 
             // Prüfen ob Nutzer Admin ist
-            const isAdmin = meta.participants?.some(
+            const isAdmin = meta.participants.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -197,12 +189,8 @@ export default [
             }
 
             // Admin-Status entziehen
-            if (ctx.sock?.groupParticipantsUpdate) {
-              await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'demote');
-              demoted++;
-            } else {
-              failed++;
-            }
+            await ctx.socket.groupParticipantsUpdate(row.jid, [jid], 'demote');
+            demoted++;
           } catch (err) {
             console.error(`Error demoting in group ${row.jid}:`, err);
             failed++;
@@ -229,7 +217,7 @@ export default [
         );
       } catch (err) {
         console.error('Error in unadmin command:', err);
-        ctx.reply('❌ Fehler beim Durchführen der Aktion: ' + err.message);
+        ctx.reply('❌ Fehler: ' + err.message);
       }
     },
   },
