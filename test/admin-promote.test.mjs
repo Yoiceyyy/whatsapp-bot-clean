@@ -171,6 +171,31 @@ test('!admin kann einen gespeicherten Gruppen-Eintrag ohne Namen per JID gezielt
   assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
 });
 
+test('!admin überspringt LID-only Teilnehmer ohne auflösbare PN-JID', async () => {
+  const updates = [];
+  const metas = new Map([
+    [GROUP_A, meta(GROUP_A, [
+      { id: BOT, admin: 'admin' },
+      { id: 'mystery@lid', lid: 'mystery@lid', admin: null },
+    ])],
+  ]);
+
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, 'Nur LID', 2, 1, Date.now()]);
+
+  state.sock = {
+    groupMetadata: async (groupJid) => metas.get(groupJid) || null,
+    groupParticipantsUpdate: async (groupJid, participants, action) => {
+      updates.push({ groupJid, participants, action });
+    },
+  };
+
+  const ctx = makeCtx(['49170123456']);
+  await cmd('admin').run(ctx);
+
+  assert.deepEqual(updates, []);
+  assert.match(ctx.replies[0], /Übersprungen: 1/);
+});
+
 test('!unadmin nutzt dieselbe Gruppen-Auswahl und demotet nur bestehende Admins', async () => {
   const updates = [];
   const metas = new Map([

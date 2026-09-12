@@ -40,7 +40,7 @@ function findParticipant(meta, targetJid) {
   }) || null;
 }
 
-function participantActionId(participant, fallback) {
+function participantActionId(participant) {
   const direct = [participant?.id, participant?.jid]
     .map((raw) => normalizeId(raw))
     .find((id) => id?.endsWith('@s.whatsapp.net'));
@@ -49,7 +49,7 @@ function participantActionId(participant, fallback) {
   const resolved = [participant?.id, participant?.jid, participant?.lid]
     .map((raw) => resolveLid(raw))
     .find((id) => id?.endsWith('@s.whatsapp.net'));
-  return resolved || fallback;
+  return resolved || null;
 }
 
 async function loadGroups(groupName) {
@@ -130,7 +130,13 @@ async function runGroupAdminChange(ctx, { action, commandName, actionLabel, audi
           continue;
         }
 
-        await sock.groupParticipantsUpdate(row.jid, [participantActionId(participant, targetJid)], action);
+        const actionId = participantActionId(participant);
+        if (!actionId) {
+          skipped++;
+          continue;
+        }
+
+        await sock.groupParticipantsUpdate(row.jid, [actionId], action);
         changed++;
       } catch (err) {
         console.error(`Error during ${action} in group ${row.jid}:`, err);
