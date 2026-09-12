@@ -201,7 +201,6 @@ export function optionalDashboardAuth(req, res, next) {
  */
 export async function handleDashboardLogin(req, res) {
   const rawUsername = String(req.body?.username || '').trim();
-  const username = (rawUsername || 'owner').toLowerCase();
   const password = String(req.body?.password || '');
   const ip = normalizeIp(req.ip || req.socket.remoteAddress || '?');
 
@@ -217,6 +216,7 @@ export async function handleDashboardLogin(req, res) {
   // Bootstrap mode: first login with ACCESS_SECRET
   const hasUsers = await hasAnyApiUser();
   if (!hasUsers) {
+    const username = (rawUsername || 'owner').toLowerCase();
     const bootstrapName = username || 'owner';
     if (bootstrapName === 'owner' && password === config.accessSecret) {
       // Initialize auth system
@@ -240,6 +240,7 @@ export async function handleDashboardLogin(req, res) {
   }
 
   // Normal mode: authenticate against api_users
+  const username = rawUsername.toLowerCase();
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }

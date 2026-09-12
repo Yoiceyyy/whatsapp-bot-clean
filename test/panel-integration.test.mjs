@@ -63,7 +63,7 @@ test('ein falsches Passwort kommt nicht durch', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'falsch' }),
+    body: JSON.stringify({ username: 'owner', password: 'falsch' }),
   });
   assert.equal(res.status, 401);
   assert.equal(res.headers.get('set-cookie'), null, 'kein Cookie bei Fehlschlag');
@@ -73,7 +73,7 @@ test('die Anmeldung liefert ein abgesichertes Sitzungs-Cookie', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
+    body: JSON.stringify({ username: 'owner', password: SECRET }),
   });
   assert.equal(res.status, 200);
   const raw = res.headers.get('set-cookie') || '';
@@ -87,7 +87,7 @@ test('nach dem Abmelden ist die Sitzung wirklich ungueltig', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
+    body: JSON.stringify({ username: 'owner', password: SECRET }),
   });
   const tmp = (res.headers.get('set-cookie') || '').split(';')[0];
   await fetch(`${base}/logout`, { method: 'POST', headers: { cookie: tmp } });

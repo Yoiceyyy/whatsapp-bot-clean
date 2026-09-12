@@ -135,6 +135,10 @@ function clientIp(req) {
   return req.ip || req.socket?.remoteAddress || '?';
 }
 
+function isWhatsAppActor(value) {
+  return /^[0-9]{5,20}@(s\.whatsapp\.net|c\.us|lid)$/i.test(String(value || ''));
+}
+
 // ── App bauen ──────────────────────────────────────────────────────
 
 export function createDashboard() {
@@ -209,12 +213,13 @@ export function createDashboard() {
   });
 
   // ── Login ──
+  const loginLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
   app.get('/login', (req, res) => {
     if (validateSession(extractSessionToken(req.headers.cookie))) return res.redirect('/');
     sendAsset(req, res, 'login', 'no-store');
   });
 
-  app.post('/login', (req, res) => handleDashboardLogin(req, res));
+  app.post('/login', loginLimiter, (req, res) => handleDashboardLogin(req, res));
 
   app.post('/logout', requireDashboardAuth, (req, res) => handleDashboardLogout(req, res));
 
@@ -602,13 +607,14 @@ export function createDashboard() {
       );
       const ids = await resolveIdentities([
         ...rows.map((r) => r.user_jid),
-        ...rows.map((r) => r.added_by),
+        ...rows.map((r) => r.added_by).filter(isWhatsAppActor),
       ]);
       res.json({
         whitelist: rows.map((r) => ({
           ...r,
           user: ids.get(String(r.user_jid)) || null,
-          addedByUser: ids.get(String(r.added_by)) || null,
+          addedByUser: isWhatsAppActor(r.added_by) ? ids.get(String(r.added_by)) || null : null,
+          addedByLabel: isWhatsAppActor(r.added_by) ? null : String(r.added_by || ''),
         })),
       });
     } catch (err) {
@@ -622,7 +628,8 @@ export function createDashboard() {
     const reason = String(req.body?.reason || '').trim().slice(0, 200);
     if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
     const actor = dashboardUser(req);
-    const added = await addToAdminWhitelist(userJid, actor.id || actor.username || 'panel', reason);
+    const actorRef = actor.username ? `dashboard:${actor.username}` : 'dashboard:panel';
+    const added = await addToAdminWhitelist(userJid, actorRef, reason);
     if (!added) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht gespeichert werden.' });
     await audit('admin-whitelist-add', '', userJid, actor.username || 'panel', reason);
     res.json({ ok: true });

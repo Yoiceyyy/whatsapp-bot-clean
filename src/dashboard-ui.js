@@ -24,7 +24,7 @@ export const LOGIN_HTML = `<!doctype html>
     <h1>${BOT_NAME}</h1>
     <p class="sub">Betriebskonsole — Anmeldung erforderlich</p>
     <label for="username">Benutzername</label>
-    <input id="username" type="text" autocomplete="username" value="owner" required>
+    <input id="username" type="text" autocomplete="username" required>
     <label for="pw">Passwort</label>
     <input id="pw" type="password" autocomplete="current-password" required autofocus>
     <button type="submit" id="loginBtn">Anmelden</button>
@@ -2465,20 +2465,22 @@ function renderSettings(){
         .catch(function(e){ toast('⚠️ ' + e.message); });
     } }, ['Hinzufügen']);
     api('/admin/whitelist').then(function(res){
-      wlBox.innerHTML = '';
-      wlBox.appendChild(h('h3', {}, ['Admin-Whitelist']));
-      wlBox.appendChild(h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
+      wlBox.replaceChildren(
+        h('h3', {}, ['Admin-Whitelist']),
+        h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
         field('Nummer oder JID', wlUser),
         field('Grund', wlReason),
         wlAdd
-      ]));
+      ])
+      );
       if (!res.whitelist.length) {
         wlBox.appendChild(h('p', { class:'muted sm' }, ['Noch niemand freigeschaltet.']));
         return;
       }
-      wlBox.appendChild(dataTable(['Nutzer', 'Hinzugefügt', 'Grund'], res.whitelist, function(r){
+      wlBox.appendChild(dataTable(['Nutzer', 'Hinzugefügt von', 'Hinzugefügt', 'Grund'], res.whitelist, function(r){
         return [
           userLabel(r.user, r.user_jid),
+          r.addedByLabel || userLabel(r.addedByUser, r.added_by),
           r.added_at ? new Date(Number(r.added_at)).toLocaleString('de-DE') : '—',
           r.reason || '—'
         ];
@@ -2490,9 +2492,10 @@ function renderSettings(){
         } }, ['Entfernen']);
       }));
     }).catch(function(e){
-      wlBox.innerHTML = '';
-      wlBox.appendChild(h('h3', {}, ['Admin-Whitelist']));
-      wlBox.appendChild(h('p', { class:'muted sm' }, [e.message]));
+      wlBox.replaceChildren(
+        h('h3', {}, ['Admin-Whitelist']),
+        h('p', { class:'muted sm' }, [e.message])
+      );
     });
   }
   if (hasRole('owner')) {
@@ -2516,14 +2519,15 @@ function renderSettings(){
         .catch(function(e){ toast('⚠️ ' + e.message); });
     } }, ['Erstellen']);
     api('/admin/accounts').then(function(res){
-      accBox.innerHTML = '';
-      accBox.appendChild(h('h3', {}, ['Dashboard-Zugänge']));
-      accBox.appendChild(h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
+      accBox.replaceChildren(
+        h('h3', {}, ['Dashboard-Zugänge']),
+        h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
         field('Benutzername', accUser),
         field('Passwort', accPass),
         field('Rolle', accRole),
         accCreate
-      ]));
+      ])
+      );
       if (!res.users.length) {
         accBox.appendChild(h('p', { class:'muted sm' }, ['Keine Zugänge vorhanden.']));
         return;
@@ -2549,9 +2553,10 @@ function renderSettings(){
         } }, [u.disabled ? 'Aktivieren' : 'Deaktivieren']);
       }));
     }).catch(function(e){
-      accBox.innerHTML = '';
-      accBox.appendChild(h('h3', {}, ['Dashboard-Zugänge']));
-      accBox.appendChild(h('p', { class:'muted sm' }, [e.message]));
+      accBox.replaceChildren(
+        h('h3', {}, ['Dashboard-Zugänge']),
+        h('p', { class:'muted sm' }, [e.message])
+      );
     });
   }
   var wipeSession = h('input', { type:'checkbox' });
