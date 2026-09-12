@@ -44,8 +44,7 @@ export async function getGroupMeta(groupJid, force = false) {
     return meta;
   } catch (err) {
     const statusCode = Number(err?.output?.statusCode || err?.data || 0);
-    const msg = String(err?.message || '').trim().toLowerCase();
-    if (statusCode === 403 || msg === 'forbidden') {
+    if (statusCode === 403) {
       logWarn(`Kein Zugriff auf Gruppe ${groupJid} (forbidden)`, 'groupMetadata');
       return cached?.meta || null;
     }
