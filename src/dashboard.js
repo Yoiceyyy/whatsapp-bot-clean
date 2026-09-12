@@ -1,9 +1,7 @@
 // Web-Panel "Control Center" — Express-Server, Auth & JSON-API.
 // Sicherheit: timing-safe Login, IP-Lockout, Rate-Limit, Helmet + strenge CSP,
 // Session-Cookies (HttpOnly/Secure/SameSite=Strict), Cache-Control: no-store.
-@@
- import { normalizePhoneNumber } from './utils/phone.js';
-import { getWarningsTable, getBansTable } from './core/database/community-tables.js';
+
 import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import express from 'express';
