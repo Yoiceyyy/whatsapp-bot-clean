@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import { getApiUser, validateApiPassword, hasAnyApiUser, initializeAuthSystem } from './api/auth.js';
 import { logWarn, logError } from './logger.js';
-import { ACCESS_SECRET } from './config.js';
+import { config } from './config.js';
 
 // ── Session Management ──────────────────────────────────────────────────────────────────────
 
@@ -201,7 +201,7 @@ export function optionalDashboardAuth(req, res, next) {
  */
 export async function handleDashboardLogin(req, res) {
   const rawUsername = String(req.body?.username || '').trim();
-  const username = rawUsername.toLowerCase();
+  const username = (rawUsername || 'owner').toLowerCase();
   const password = String(req.body?.password || '');
   const ip = normalizeIp(req.ip || req.socket.remoteAddress || '?');
 
@@ -218,9 +218,9 @@ export async function handleDashboardLogin(req, res) {
   const hasUsers = await hasAnyApiUser();
   if (!hasUsers) {
     const bootstrapName = username || 'owner';
-    if (bootstrapName === 'owner' && password === ACCESS_SECRET) {
+    if (bootstrapName === 'owner' && password === config.accessSecret) {
       // Initialize auth system
-      const init = await initializeAuthSystem(ACCESS_SECRET);
+      const init = await initializeAuthSystem(config.accessSecret);
       if (!init.success) {
         logError(new Error(init.message), 'dashboard.bootstrapLogin');
         return res.status(500).json({ error: 'Bootstrap failed' });

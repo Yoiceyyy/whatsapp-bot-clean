@@ -131,6 +131,10 @@ function normalizeDashboardJid(input) {
   return normalized ? `${normalized}@s.whatsapp.net` : null;
 }
 
+function clientIp(req) {
+  return req.ip || req.socket?.remoteAddress || '?';
+}
+
 // ── App bauen ──────────────────────────────────────────────────────
 
 export function createDashboard() {

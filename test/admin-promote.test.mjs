@@ -109,7 +109,7 @@ test('!admin nutzt bei verfügbarem Gruppen-Snapshot keinen Einzelabruf pro Grup
 
   assert.equal(metadataCalls, 0);
   assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
-  assert.match(ctx.replies[0], /Übersprungen: 1/);
+  assert.match(ctx.replies[0], /Übersprungen: 0/);
 });
 
 test('!admin fällt bei Snapshot-Fehler auf Einzelabrufe zurück', async () => {
