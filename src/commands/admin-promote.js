@@ -1,224 +1,189 @@
-// src/commands/admin-promote.js
 // Commands: !admin, !unadmin
 // Rollen: owner only
-// Funktion: Personen in ALLEN verwalteten Gruppen zum Admin machen
+// Funktion: Personen in gespeicherten Gruppen befoerdern/herabstufen
 
-import { normalizePhoneNumber } from '../utils/phone.js';
-import { logModerationAction } from '../permissions-new.js';
-import { getGroupMeta } from '../permissions.js';
 import { dbRows } from '../db.js';
+import { getGroupMeta, botIsAdminInMeta, normalizeId, resolveLid } from '../permissions.js';
+import { logModerationAction } from '../permissions-new.js';
+import { state } from '../state.js';
+import { normalizePhoneNumber } from '../utils/phone.js';
+
+const GROUP_LIKE = '%@g.us';
+const ADMIN_ROLES = new Set(['admin', 'superadmin']);
+
+function usage(name) {
+  return `❌ Nutzung: !${name} <Nummer> [Gruppenname]\n`
+    + `Beispiele: !${name} 49170123456\n`
+    + `!${name} 49170123456 Meine Gruppe`;
+}
+
+function participantIds(participant) {
+  const ids = new Set();
+  for (const raw of [participant?.id, participant?.lid, participant?.jid, participant?.phoneNumber]) {
+    const normalized = normalizeId(raw);
+    if (!normalized) continue;
+    ids.add(normalized);
+    const resolved = resolveLid(normalized);
+    if (resolved) ids.add(resolved);
+  }
+  return ids;
+}
+
+function findParticipant(meta, targetJid) {
+  const targetIds = new Set([normalizeId(targetJid), resolveLid(targetJid)].filter(Boolean));
+  return meta?.participants?.find((participant) => {
+    const ids = participantIds(participant);
+    for (const id of ids) {
+      if (targetIds.has(id)) return true;
+    }
+    return false;
+  }) || null;
+}
+
+function participantActionId(participant, fallback) {
+  return normalizeId(participant?.id)
+    || normalizeId(participant?.jid)
+    || normalizeId(participant?.lid)
+    || fallback;
+}
+
+async function loadGroups(groupName) {
+  const trimmed = String(groupName || '').trim();
+  if (!trimmed) {
+    return {
+      scopeLabel: 'allen gespeicherten Gruppen',
+      groups: await dbRows(
+        'SELECT jid, name FROM groups WHERE jid LIKE ? ORDER BY COALESCE(LOWER(name), LOWER(jid)), jid',
+        [GROUP_LIKE]
+      ),
+    };
+  }
+
+  const groups = await dbRows(
+    'SELECT jid, name FROM groups WHERE jid LIKE ? AND LOWER(COALESCE(name, \'\')) = LOWER(?) ORDER BY jid',
+    [GROUP_LIKE, trimmed]
+  );
+
+  if (!groups.length) {
+    return { error: `⚠️ Keine gespeicherte Gruppe mit dem Namen "${trimmed}" gefunden.` };
+  }
+  if (groups.length > 1) {
+    return { error: `⚠️ Mehrere gespeicherte Gruppen heißen "${trimmed}" — bitte Namen im Panel eindeutiger machen.` };
+  }
+  return {
+    scopeLabel: `der Gruppe *${groups[0].name || trimmed}*`,
+    groups,
+  };
+}
+
+async function runGroupAdminChange(ctx, { action, commandName, actionLabel, auditAction }) {
+  const num = ctx.args[0];
+  if (!num) return ctx.reply(usage(commandName));
+
+  const normalized = normalizePhoneNumber(num);
+  if (!normalized) return ctx.reply('❌ Ungültige Telefonnummer');
+
+  const sock = state.sock;
+  if (!sock?.groupParticipantsUpdate) {
+    return ctx.reply('⚠️ Bot ist gerade nicht bereit.');
+  }
+
+  const targetJid = `${normalized}@s.whatsapp.net`;
+  const groupName = ctx.args.slice(1).join(' ').trim();
+
+  try {
+    const selection = await loadGroups(groupName);
+    if (selection.error) return ctx.reply(selection.error);
+    if (!selection.groups?.length) return ctx.reply('⚠️ Keine Gruppen gefunden');
+
+    let changed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const row of selection.groups) {
+      try {
+        const meta = await getGroupMeta(row.jid);
+        if (!meta?.participants) {
+          skipped++;
+          continue;
+        }
+
+        if (!botIsAdminInMeta(meta)) {
+          skipped++;
+          continue;
+        }
+
+        const participant = findParticipant(meta, targetJid);
+        if (!participant) {
+          skipped++;
+          continue;
+        }
+
+        const isAdmin = ADMIN_ROLES.has(participant.admin);
+        if ((action === 'promote' && isAdmin) || (action === 'demote' && !isAdmin)) {
+          skipped++;
+          continue;
+        }
+
+        await sock.groupParticipantsUpdate(row.jid, [participantActionId(participant, targetJid)], action);
+        changed++;
+      } catch (err) {
+        console.error(`Error during ${action} in group ${row.jid}:`, err);
+        failed++;
+      }
+    }
+
+    try {
+      await logModerationAction(
+        auditAction,
+        ctx.sender,
+        targetJid,
+        null,
+        `${action}:${changed},failed:${failed},skip:${skipped}${groupName ? `,group:${groupName}` : ',group:all'}`
+      );
+    } catch (logErr) {
+      console.error('Audit log error:', logErr);
+    }
+
+    return ctx.reply(
+      `✅ ${num} in ${selection.scopeLabel}: ${actionLabel} ${changed}\n`
+      + `❌ Fehler: ${failed} · ↩️ Übersprungen: ${skipped}`
+    );
+  } catch (err) {
+    console.error(`Error in ${commandName} command:`, err);
+    return ctx.reply('❌ Fehler: ' + err.message);
+  }
+}
 
 export default [
   {
     name: 'admin',
-    desc: '👑 In allen Gruppen zum Admin machen (owner only)',
-    usage: '!admin <Nummer>',
+    desc: '👑 In allen oder einer gespeicherten Gruppe zum Admin machen (owner only)',
+    usage: '!admin <Nummer> [Gruppenname]',
     ownerOnly: true,
     category: 'admin',
-
     async run(ctx) {
-      const num = ctx.args[0];
-      if (!num) {
-        return ctx.reply(
-          '❌ Nutzung: !admin <Nummer>\n'
-          + 'Beispiel: !admin 49170123456'
-        );
-      }
-
-      // Telefonnummer normalisieren
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
-      }
-
-      const jid = `${normalized}@s.whatsapp.net`;
-
-      try {
-        // Alle Gruppen abrufen (nicht nur enabled = 1!)
-        const groups = await dbRows(
-          'SELECT jid FROM groups WHERE jid LIKE "%@g.us"',
-          []
-        );
-
-        if (!groups || !groups.length) {
-          return ctx.reply('⚠️ Keine Gruppen gefunden');
-        }
-
-        let promoted = 0;
-        let failed = 0;
-        let skipped = 0;
-
-        // In jeder Gruppe versuchen
-        for (const row of groups) {
-          try {
-            // Nutze getGroupMeta aus permissions.js
-            const meta = await getGroupMeta(row.jid);
-            if (!meta || !meta.participants) {
-              skipped++;
-              continue;
-            }
-
-            // Prüfen ob Bot Admin ist
-            const botJid = ctx.socket?.user?.id || ctx.botJid;
-            const botIsAdmin = meta.participants.some(
-              (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
-            );
-
-            if (!botIsAdmin) {
-              skipped++;
-              continue;
-            }
-
-            // Prüfen ob Nutzer bereits Admin ist
-            const isAdmin = meta.participants.some(
-              (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
-            );
-
-            if (isAdmin) {
-              skipped++;
-              continue;
-            }
-
-            // Prüfen ob Nutzer überhaupt in der Gruppe ist
-            const userInGroup = meta.participants.some((p) => p.id === jid);
-            if (!userInGroup) {
-              skipped++;
-              continue;
-            }
-
-            // Zum Admin machen
-            await ctx.socket.groupParticipantsUpdate(row.jid, [jid], 'promote');
-            promoted++;
-          } catch (err) {
-            console.error(`Error promoting in group ${row.jid}:`, err);
-            failed++;
-          }
-        }
-
-        // Audit-Log
-        try {
-          await logModerationAction(
-            'admin.promote',
-            ctx.sender,
-            jid,
-            null,
-            `promote:${promoted},failed:${failed},skip:${skipped}`
-          );
-        } catch (logErr) {
-          console.error('Audit log error:', logErr);
-        }
-
-        ctx.reply(
-          `✅ ${num} wurde in ${promoted} Gruppen zum Admin gemacht\n`
-          + `❌ Fehler: ${failed}\n`
-          + `↩️ Übersprungen: ${skipped}`
-        );
-      } catch (err) {
-        console.error('Error in admin command:', err);
-        ctx.reply('❌ Fehler: ' + err.message);
-      }
+      return runGroupAdminChange(ctx, {
+        action: 'promote',
+        commandName: 'admin',
+        actionLabel: 'befördert',
+        auditAction: 'admin.promote',
+      });
     },
   },
-
   {
     name: 'unadmin',
-    desc: '🙎 Admin-Status in allen Gruppen entziehen (owner only)',
-    usage: '!unadmin <Nummer>',
+    desc: '🙎 Admin-Status in allen oder einer gespeicherten Gruppe entziehen (owner only)',
+    usage: '!unadmin <Nummer> [Gruppenname]',
     ownerOnly: true,
     category: 'admin',
-
     async run(ctx) {
-      const num = ctx.args[0];
-      if (!num) {
-        return ctx.reply(
-          '❌ Nutzung: !unadmin <Nummer>\n'
-          + 'Beispiel: !unadmin 49170123456'
-        );
-      }
-
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
-      }
-
-      const jid = `${normalized}@s.whatsapp.net`;
-
-      try {
-        // Alle Gruppen abrufen
-        const groups = await dbRows(
-          'SELECT jid FROM groups WHERE jid LIKE "%@g.us"',
-          []
-        );
-
-        if (!groups || !groups.length) {
-          return ctx.reply('⚠️ Keine Gruppen gefunden');
-        }
-
-        let demoted = 0;
-        let failed = 0;
-        let skipped = 0;
-
-        // In jeder Gruppe versuchen
-        for (const row of groups) {
-          try {
-            const meta = await getGroupMeta(row.jid);
-            if (!meta || !meta.participants) {
-              skipped++;
-              continue;
-            }
-
-            // Prüfen ob Bot Admin ist
-            const botJid = ctx.socket?.user?.id || ctx.botJid;
-            const botIsAdmin = meta.participants.some(
-              (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
-            );
-
-            if (!botIsAdmin) {
-              skipped++;
-              continue;
-            }
-
-            // Prüfen ob Nutzer Admin ist
-            const isAdmin = meta.participants.some(
-              (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
-            );
-
-            if (!isAdmin) {
-              skipped++;
-              continue;
-            }
-
-            // Admin-Status entziehen
-            await ctx.socket.groupParticipantsUpdate(row.jid, [jid], 'demote');
-            demoted++;
-          } catch (err) {
-            console.error(`Error demoting in group ${row.jid}:`, err);
-            failed++;
-          }
-        }
-
-        // Audit-Log
-        try {
-          await logModerationAction(
-            'admin.demote',
-            ctx.sender,
-            jid,
-            null,
-            `demote:${demoted},failed:${failed},skip:${skipped}`
-          );
-        } catch (logErr) {
-          console.error('Audit log error:', logErr);
-        }
-
-        ctx.reply(
-          `✅ ${num} wurde in ${demoted} Gruppen degradiert\n`
-          + `❌ Fehler: ${failed}\n`
-          + `↩️ Übersprungen: ${skipped}`
-        );
-      } catch (err) {
-        console.error('Error in unadmin command:', err);
-        ctx.reply('❌ Fehler: ' + err.message);
-      }
+      return runGroupAdminChange(ctx, {
+        action: 'demote',
+        commandName: 'unadmin',
+        actionLabel: 'degradiert',
+        auditAction: 'admin.demote',
+      });
     },
   },
 ];
