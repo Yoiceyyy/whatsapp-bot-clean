@@ -102,13 +102,17 @@ async function loadGroupMetaMap(sock, groups) {
   if (!wanted.size) return metaByGroup;
 
   if (typeof sock?.groupFetchAllParticipating === 'function') {
-    const all = await sock.groupFetchAllParticipating();
-    for (const meta of Object.values(all || {})) {
-      const jid = normalizeId(meta?.id);
-      if (!jid || !wanted.has(jid)) continue;
-      metaByGroup.set(jid, meta);
+    try {
+      const all = await sock.groupFetchAllParticipating();
+      for (const meta of Object.values(all || {})) {
+        const jid = normalizeId(meta?.id);
+        if (!jid || !wanted.has(jid)) continue;
+        metaByGroup.set(jid, meta);
+      }
+      return metaByGroup;
+    } catch {
+      metaByGroup.clear();
     }
-    return metaByGroup;
   }
 
   for (const jid of wanted) {

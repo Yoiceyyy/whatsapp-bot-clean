@@ -112,6 +112,32 @@ test('!admin nutzt bei verfügbarem Gruppen-Snapshot keinen Einzelabruf pro Grup
   assert.match(ctx.replies[0], /Übersprungen: 1/);
 });
 
+test('!admin fällt bei Snapshot-Fehler auf Einzelabrufe zurück', async () => {
+  const updates = [];
+  let metadataCalls = 0;
+
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, 'Alpha', 2, 1, Date.now()]);
+
+  state.sock = {
+    groupMetadata: async (groupJid) => {
+      metadataCalls++;
+      return meta(groupJid, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }]);
+    },
+    groupFetchAllParticipating: async () => {
+      throw new Error('snapshot down');
+    },
+    groupParticipantsUpdate: async (groupJid, participants, action) => {
+      updates.push({ groupJid, participants, action });
+    },
+  };
+
+  const ctx = makeCtx(['49170123456']);
+  await cmd('admin').run(ctx);
+
+  assert.equal(metadataCalls, 1);
+  assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
+});
+
 test('!admin mit Gruppenname trifft exakt case-insensitive nur die benannte Gruppe', async () => {
   const updates = [];
   const metas = new Map([
