@@ -64,9 +64,20 @@ async function loadGroups(groupName) {
     };
   }
 
+  const directJid = await dbRows(
+    'SELECT jid, name FROM groups WHERE jid = ? LIMIT 2',
+    [trimmed]
+  );
+  if (directJid.length === 1) {
+    return {
+      scopeLabel: `der Gruppe *${directJid[0].name || directJid[0].jid}*`,
+      groups: directJid,
+    };
+  }
+
   const groups = await dbRows(
-    'SELECT jid, name FROM groups WHERE jid LIKE ? AND (LOWER(COALESCE(name, \'\')) = LOWER(?) OR LOWER(jid) = LOWER(?)) ORDER BY jid',
-    [GROUP_LIKE, trimmed, trimmed]
+    'SELECT jid, name FROM groups WHERE jid LIKE ? AND LOWER(COALESCE(name, \'\')) = LOWER(?) ORDER BY jid',
+    [GROUP_LIKE, trimmed]
   );
 
   if (!groups.length) {

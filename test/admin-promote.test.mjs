@@ -154,9 +154,11 @@ test('!admin kann einen gespeicherten Gruppen-Eintrag ohne Namen per JID gezielt
   const updates = [];
   const metas = new Map([
     [GROUP_A, meta(GROUP_A, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }])],
+    [GROUP_B, meta(GROUP_B, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }])],
   ]);
 
   await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, '', 2, 1, Date.now()]);
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_B, GROUP_A, 2, 1, Date.now()]);
 
   state.sock = {
     groupMetadata: async (groupJid) => metas.get(groupJid) || null,
