@@ -627,22 +627,32 @@ export function createDashboard() {
     const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
     const reason = String(req.body?.reason || '').trim().slice(0, 200);
     if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
-    const actor = dashboardUser(req);
-    const actorRef = actor.username ? `dashboard:${actor.username}` : 'dashboard:panel';
-    const added = await addToAdminWhitelist(userJid, actorRef, reason);
-    if (!added) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht gespeichert werden.' });
-    await audit('admin-whitelist-add', '', userJid, actor.username || 'panel', reason);
-    res.json({ ok: true });
+    try {
+      const actor = dashboardUser(req);
+      const actorRef = actor.username ? `dashboard:${actor.username}` : 'dashboard:panel';
+      const added = await addToAdminWhitelist(userJid, actorRef, reason);
+      if (!added) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht gespeichert werden.' });
+      await audit('admin-whitelist-add', '', userJid, actor.username || 'panel', reason);
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelistAdd');
+      res.status(500).json({ error: 'Whitelist konnte nicht aktualisiert werden.' });
+    }
   });
 
   api.post('/admin/whitelist/remove', requireRole('co_owner'), async (req, res) => {
     const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
     if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
-    const actor = dashboardUser(req);
-    const removed = await removeFromAdminWhitelist(userJid);
-    if (!removed) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht entfernt werden.' });
-    await audit('admin-whitelist-remove', '', userJid, actor.username || 'panel', '');
-    res.json({ ok: true });
+    try {
+      const actor = dashboardUser(req);
+      const removed = await removeFromAdminWhitelist(userJid);
+      if (!removed) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht entfernt werden.' });
+      await audit('admin-whitelist-remove', '', userJid, actor.username || 'panel', '');
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelistRemove');
+      res.status(500).json({ error: 'Whitelist konnte nicht aktualisiert werden.' });
+    }
   });
 
   api.get('/admin/accounts', requireRole('owner'), async (_req, res) => {
@@ -667,39 +677,54 @@ export function createDashboard() {
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '');
     const role = String(req.body?.role || '').trim();
-    const result = await createApiUser(username, password, role);
-    if (result?.error) return res.status(400).json({ error: result.error });
-    await audit('dashboard-account-create', '', result.id, dashboardUser(req).username || 'panel', role);
-    res.status(201).json({ ok: true, user: result });
+    try {
+      const result = await createApiUser(username, password, role);
+      if (result?.error) return res.status(400).json({ error: result.error });
+      await audit('dashboard-account-create', '', result.id, dashboardUser(req).username || 'panel', role);
+      res.status(201).json({ ok: true, user: result });
+    } catch (err) {
+      logError(err, 'panel.accountCreate');
+      res.status(500).json({ error: 'Zugang konnte nicht erstellt werden.' });
+    }
   });
 
   api.post('/admin/accounts/:id/role', requireRole('owner'), async (req, res) => {
     const userId = String(req.params.id || '');
     const role = String(req.body?.role || '').trim();
     if (!userId || !role) return res.status(400).json({ error: 'Nutzer und Rolle fehlen.' });
-    const self = dashboardUser(req);
-    if (self.id && self.id === userId && role !== 'owner') {
-      return res.status(400).json({ error: 'Der eigene Owner-Zugang kann nicht herabgestuft werden.' });
+    try {
+      const self = dashboardUser(req);
+      if (self.id && self.id === userId && role !== 'owner') {
+        return res.status(400).json({ error: 'Der eigene Owner-Zugang kann nicht herabgestuft werden.' });
+      }
+      const changed = await changeApiUserRole(userId, role);
+      if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
+      await audit('dashboard-account-role', '', userId, self.username || 'panel', role);
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.accountRole');
+      res.status(500).json({ error: 'Rolle konnte nicht geändert werden.' });
     }
-    const changed = await changeApiUserRole(userId, role);
-    if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
-    await audit('dashboard-account-role', '', userId, self.username || 'panel', role);
-    res.json({ ok: true });
   });
 
   api.post('/admin/accounts/:id/disabled', requireRole('owner'), async (req, res) => {
     const userId = String(req.params.id || '');
     const disabled = !!req.body?.disabled;
     if (!userId) return res.status(400).json({ error: 'Nutzer fehlt.' });
-    const self = dashboardUser(req);
-    if (self.id && self.id === userId && disabled) {
-      return res.status(400).json({ error: 'Der eigene Zugang kann nicht deaktiviert werden.' });
+    try {
+      const self = dashboardUser(req);
+      if (self.id && self.id === userId && disabled) {
+        return res.status(400).json({ error: 'Der eigene Zugang kann nicht deaktiviert werden.' });
+      }
+      const ok = disabled ? await disableApiUser(userId) : await enableApiUser(userId);
+      if (!ok) return res.status(400).json({ error: 'Status konnte nicht geändert werden.' });
+      if (disabled) revokeSessionsForUser(userId);
+      await audit('dashboard-account-disabled', '', userId, self.username || 'panel', disabled ? '1' : '0');
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.accountDisabled');
+      res.status(500).json({ error: 'Status konnte nicht geändert werden.' });
     }
-    const ok = disabled ? await disableApiUser(userId) : await enableApiUser(userId);
-    if (!ok) return res.status(400).json({ error: 'Status konnte nicht geändert werden.' });
-    if (disabled) revokeSessionsForUser(userId);
-    await audit('dashboard-account-disabled', '', userId, self.username || 'panel', disabled ? '1' : '0');
-    res.json({ ok: true });
   });
 
   // Stacktraces enthalten interne Dateipfade und Zeilennummern. Der Ring-Buffer

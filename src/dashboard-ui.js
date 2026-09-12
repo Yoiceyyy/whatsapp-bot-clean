@@ -2538,7 +2538,7 @@ function renderSettings(){
       accBox.appendChild(dataTable(['Benutzer', 'Rolle', 'Status'], res.users, function(u){
         var roleSelect = h('select', { onchange:function(){
           api('/admin/accounts/' + encodeURIComponent(u.id) + '/role', { method:'POST', body:{ role: roleSelect.value } })
-            .then(function(){ toast('✅ Rolle gespeichert'); })
+            .then(function(){ u.role = roleSelect.value; toast('✅ Rolle gespeichert'); })
             .catch(function(e){ toast('⚠️ ' + e.message); roleSelect.value = u.role; });
         } }, [
           h('option', { value:'viewer' }, ['Viewer']),

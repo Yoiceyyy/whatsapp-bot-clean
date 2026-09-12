@@ -204,6 +204,17 @@ test('Dashboard kann neue Zugänge anlegen und auflisten', async () => {
   const created = body.users.find((u) => u.username === 'neueradmin');
   assert.ok(created, 'neuer Zugang fehlt in der Liste');
   assert.equal(created.role, 'co_owner');
+
+  res = await post(`/api/admin/accounts/${created.id}/role`, { role: 'admin' });
+  assert.equal(res.status, 200);
+
+  res = await post(`/api/admin/accounts/${created.id}/disabled`, { disabled: true });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: auth() });
+  const updated = (await res.json()).users.find((u) => u.id === created.id);
+  assert.equal(updated.role, 'admin');
+  assert.equal(updated.disabled, true);
 });
 
 test('Moderationsansicht zeigt auch moderation_audit-Einträge', async () => {
