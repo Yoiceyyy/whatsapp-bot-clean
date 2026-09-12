@@ -92,6 +92,32 @@ async function loadGroups(groupName) {
   };
 }
 
+async function loadGroupMetaMap(sock, groups) {
+  const wanted = new Set(
+    groups
+      .map((row) => normalizeId(row?.jid))
+      .filter((jid) => jid?.endsWith('@g.us'))
+  );
+  const metaByGroup = new Map();
+  if (!wanted.size) return metaByGroup;
+
+  if (typeof sock?.groupFetchAllParticipating === 'function') {
+    const all = await sock.groupFetchAllParticipating();
+    for (const meta of Object.values(all || {})) {
+      const jid = normalizeId(meta?.id);
+      if (!jid || !wanted.has(jid)) continue;
+      metaByGroup.set(jid, meta);
+    }
+    return metaByGroup;
+  }
+
+  for (const jid of wanted) {
+    const meta = await getGroupMeta(jid);
+    if (meta) metaByGroup.set(jid, meta);
+  }
+  return metaByGroup;
+}
+
 async function runGroupAdminChange(ctx, { action, commandName, actionLabel, auditAction }) {
   const num = ctx.args[0];
   if (!num) return ctx.reply(usage(commandName));
@@ -111,6 +137,7 @@ async function runGroupAdminChange(ctx, { action, commandName, actionLabel, audi
     const selection = await loadGroups(groupName);
     if (selection.error) return ctx.reply(selection.error);
     if (!selection.groups?.length) return ctx.reply('⚠️ Keine Gruppen gefunden');
+    const metaByGroup = await loadGroupMetaMap(sock, selection.groups);
 
     let changed = 0;
     let failed = 0;
@@ -118,7 +145,7 @@ async function runGroupAdminChange(ctx, { action, commandName, actionLabel, audi
 
     for (const row of selection.groups) {
       try {
-        const meta = await getGroupMeta(row.jid);
+        const meta = metaByGroup.get(normalizeId(row.jid)) || null;
         if (!meta?.participants) {
           skipped++;
           continue;

@@ -84,6 +84,34 @@ test('!admin nutzt alle gespeicherten Gruppen und überspringt nicht passende si
   assert.match(ctx.replies[0], /Übersprungen: 4/);
 });
 
+test('!admin nutzt bei verfügbarem Gruppen-Snapshot keinen Einzelabruf pro Gruppe', async () => {
+  const updates = [];
+  let metadataCalls = 0;
+
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, 'Alpha', 2, 1, Date.now()]);
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_B, 'Beta', 2, 1, Date.now()]);
+
+  state.sock = {
+    groupMetadata: async () => {
+      metadataCalls++;
+      throw new Error('should not be called when group snapshot is available');
+    },
+    groupFetchAllParticipating: async () => ({
+      [GROUP_A]: meta(GROUP_A, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }]),
+    }),
+    groupParticipantsUpdate: async (groupJid, participants, action) => {
+      updates.push({ groupJid, participants, action });
+    },
+  };
+
+  const ctx = makeCtx(['49170123456']);
+  await cmd('admin').run(ctx);
+
+  assert.equal(metadataCalls, 0);
+  assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
+  assert.match(ctx.replies[0], /Übersprungen: 1/);
+});
+
 test('!admin mit Gruppenname trifft exakt case-insensitive nur die benannte Gruppe', async () => {
   const updates = [];
   const metas = new Map([
