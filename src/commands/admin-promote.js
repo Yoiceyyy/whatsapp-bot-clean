@@ -70,10 +70,10 @@ async function loadGroups(groupName) {
   );
 
   if (!groups.length) {
-    return { error: `⚠️ Keine gespeicherte Gruppe mit dem Namen "${trimmed}" gefunden.` };
+    return { error: `⚠️ Kein gespeicherter Gruppen-Eintrag mit dem Namen "${trimmed}" gefunden.` };
   }
   if (groups.length > 1) {
-    return { error: `⚠️ Mehrere gespeicherte Gruppen heißen "${trimmed}" — bitte Namen im Panel eindeutiger machen.` };
+    return { error: `⚠️ Mehrere gespeicherte Gruppen-Einträge heißen "${trimmed}" — bitte Namen im Panel eindeutiger machen.` };
   }
   return {
     scopeLabel: `der Gruppe *${groups[0].name || trimmed}*`,
