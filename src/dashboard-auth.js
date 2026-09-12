@@ -14,6 +14,7 @@ const loginFails = new Map(); // ip → {count, lockedUntil}
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const LOGIN_LOCK_MINUTES = 15;
 const MAX_LOGIN_FAILS = 5;
+const SESSION_COOKIE = 'sid';
 
 /**
  * Creates a new session token and stores it.
@@ -76,7 +77,7 @@ function revokeSession(token) {
  */
 function extractSessionToken(cookieHeader) {
   if (!cookieHeader) return null;
-  const m = /(?:^|;\s*)dashboard_sid=([a-f0-9]{64})/.exec(cookieHeader);
+  const m = /(?:^|;\s*)(?:sid|dashboard_sid)=([a-f0-9]{64})/.exec(cookieHeader);
   return m ? m[1] : null;
 }
 
@@ -193,7 +194,9 @@ export function optionalDashboardAuth(req, res, next) {
  * Returns session token if successful.
  */
 export async function handleDashboardLogin(req, res) {
-  const { username, password } = req.body || {};
+  const rawUsername = String(req.body?.username || '').trim();
+  const username = rawUsername.toLowerCase();
+  const password = String(req.body?.password || '');
   const ip = normalizeIp(req.ip || req.socket.remoteAddress || '?');
 
   // Rate limiting
@@ -208,7 +211,8 @@ export async function handleDashboardLogin(req, res) {
   // Bootstrap mode: first login with ACCESS_SECRET
   const hasUsers = await hasAnyApiUser();
   if (!hasUsers) {
-    if (username === 'owner' && password === ACCESS_SECRET) {
+    const bootstrapName = username || 'owner';
+    if (bootstrapName === 'owner' && password === ACCESS_SECRET) {
       // Initialize auth system
       const init = await initializeAuthSystem(ACCESS_SECRET);
       if (!init.success) {
@@ -220,7 +224,7 @@ export async function handleDashboardLogin(req, res) {
       const token = issueSession('usr_owner', 'owner', 'owner');
       res.setHeader(
         'Set-Cookie',
-        `dashboard_sid=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
+        `${SESSION_COOKIE}=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
       );
       return res.json({ ok: true });
     }
@@ -246,6 +250,11 @@ export async function handleDashboardLogin(req, res) {
     return res.status(401).json({ error: 'Account disabled' });
   }
 
+  if (user.role === 'viewer') {
+    recordLoginFail(ip);
+    return res.status(403).json({ error: 'Viewer accounts cannot access the dashboard' });
+  }
+
   // Verify password
   const isValid = await validateApiPassword(password, user.pw_hash, user.pw_salt);
   if (!isValid) {
@@ -258,7 +267,7 @@ export async function handleDashboardLogin(req, res) {
   const token = issueSession(user.id, user.username, user.role);
   res.setHeader(
     'Set-Cookie',
-    `dashboard_sid=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
+    `${SESSION_COOKIE}=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
   );
 
   logWarn(`✅ Dashboard login: ${username} (${user.role})`, 'dashboard-auth');
@@ -273,7 +282,7 @@ export function handleDashboardLogout(req, res) {
   if (token) {
     revokeSession(token);
   }
-  res.setHeader('Set-Cookie', 'dashboard_sid=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict');
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict`);
   res.json({ ok: true });
 }
 

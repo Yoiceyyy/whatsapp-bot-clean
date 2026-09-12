@@ -11,6 +11,26 @@ import {
   logModerationAction 
 } from '../permissions-new.js';
 
+function resolveTargetJid(ctx) {
+  const mentioned = typeof ctx.targetUser === 'function' ? ctx.targetUser() : null;
+  if (mentioned) return mentioned;
+  const normalized = normalizePhoneNumber(ctx.args[0] || '');
+  return normalized ? `${normalized}@s.whatsapp.net` : null;
+}
+
+function resolveDurationAndReason(ctx, usedExplicitNumber) {
+  if (usedExplicitNumber) {
+    return {
+      durationStr: ctx.args[1],
+      reason: ctx.args.slice(2).join(' ') || 'Keine Angabe',
+    };
+  }
+  return {
+    durationStr: ctx.args[0],
+    reason: ctx.args.slice(1).join(' ') || 'Keine Angabe',
+  };
+}
+
 export default [
   {
     name: 'suspend',
@@ -20,21 +40,15 @@ export default [
     category: 'admin',
 
     async run(ctx) {
-      const num = ctx.args[0];
-      const durationStr = ctx.args[1];
-      const reason = ctx.args.slice(2).join(' ') || 'Keine Angabe';
+      const usedExplicitNumber = !!normalizePhoneNumber(ctx.args[0] || '');
+      const jid = resolveTargetJid(ctx);
+      const { durationStr, reason } = resolveDurationAndReason(ctx, usedExplicitNumber);
 
-      if (!num || !durationStr) {
+      if (!jid || !durationStr) {
         return ctx.reply(
           '❌ Nutzung: !suspend <Nummer> <Minuten> [Grund]\n'
           + 'Beispiel: !suspend 49170123456 60 Spam'
         );
-      }
-
-      // Telefonnummer normalisieren
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
       }
 
       // Dauer parsen
@@ -44,8 +58,8 @@ export default [
         return ctx.reply('❌ Dauer muss zwischen 1 und 10.080 Minuten liegen');
       }
 
-      const jid = `${normalized}@s.whatsapp.net`;
       const durationMs = minutes * 60_000;
+      const num = String(jid).split('@')[0];
 
       try {
         // Prüfen, ob bereits suspendiert
@@ -88,20 +102,14 @@ export default [
     category: 'admin',
 
     async run(ctx) {
-      const num = ctx.args[0];
-      if (!num) {
+      const jid = resolveTargetJid(ctx);
+      if (!jid) {
         return ctx.reply(
           '❌ Nutzung: !unsuspend <Nummer>\n'
           + 'Beispiel: !unsuspend 49170123456'
         );
       }
-
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
-      }
-
-      const jid = `${normalized}@s.whatsapp.net`;
+      const num = String(jid).split('@')[0];
 
       try {
         // Prüfen, ob suspendiert

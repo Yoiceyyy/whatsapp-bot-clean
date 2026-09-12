@@ -6,7 +6,13 @@
 import { normalizePhoneNumber } from '../utils/phone.js';
 import { addToAdminWhitelist, removeFromAdminWhitelist, isOnAdminWhitelist } from '../permissions-new.js';
 import { logModerationAction } from '../permissions-new.js';
-import { hasRoleLevel } from '../api/permissions-rbac.js';
+
+function resolveTargetJid(ctx) {
+  const mentioned = typeof ctx.targetUser === 'function' ? ctx.targetUser() : null;
+  if (mentioned) return mentioned;
+  const normalized = normalizePhoneNumber(ctx.args[0] || '');
+  return normalized ? `${normalized}@s.whatsapp.net` : null;
+}
 
 export default [
   {
@@ -17,21 +23,14 @@ export default [
     category: 'admin',
 
     async run(ctx) {
-      const num = ctx.args[0];
-      if (!num) {
+      const jid = resolveTargetJid(ctx);
+      if (!jid) {
         return ctx.reply(
           '❌ Nutzung: !adminwhitelist <Nummer>\n'
           + 'Beispiel: !adminwhitelist 49170123456'
         );
       }
-
-      // Telefonnummer normalisieren
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
-      }
-
-      const jid = `${normalized}@s.whatsapp.net`;
+      const num = String(jid).split('@')[0];
 
       try {
         // Prüfen, ob bereits auf Whitelist
@@ -68,20 +67,14 @@ export default [
     category: 'admin',
 
     async run(ctx) {
-      const num = ctx.args[0];
-      if (!num) {
+      const jid = resolveTargetJid(ctx);
+      if (!jid) {
         return ctx.reply(
           '❌ Nutzung: !adminunwhitelist <Nummer>\n'
           + 'Beispiel: !adminunwhitelist 49170123456'
         );
       }
-
-      const normalized = normalizePhoneNumber(num);
-      if (!normalized) {
-        return ctx.reply('❌ Ungültige Telefonnummer');
-      }
-
-      const jid = `${normalized}@s.whatsapp.net`;
+      const num = String(jid).split('@')[0];
 
       try {
         // Prüfen, ob auf Whitelist

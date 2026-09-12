@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import express from 'express';
 import helmet from 'helmet';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import rateLimit from 'express-rate-limit';
 import { BOT_NAME, config } from './config.js';
 import { state, rolloverDay, requestPairingCode, forceRelink, requestShutdown } from './state.js';
 import { dbRun, dbRows, dayKey, wipeAllData } from './db.js';
@@ -29,6 +29,11 @@ import {
   invalidateGroupCache, cachedGroupCount,
 } from './services/query.js';
 import { createApiV1, API_BASE } from './api/index.js';
+import { requireDashboardAuth, handleDashboardLogin, handleDashboardLogout, extractSessionToken, validateSession } from './dashboard-auth.js';
+import { hasRoleLevel } from './api/permissions-rbac.js';
+import { addToAdminWhitelist, removeFromAdminWhitelist, getModerationAudit } from './permissions-new.js';
+import { createApiUser, listApiUsers, changeApiUserRole, disableApiUser, enableApiUser } from './api/auth.js';
+import { normalizePhoneNumber } from './utils/phone.js';
 
 // ── Statische Assets: Versionierung + Vorab-Kompression ───────────
 
@@ -101,66 +106,29 @@ function asyncSafe(router) {
   return router;
 }
 
-// ── Auth-Grundlagen ────────────────────────────────────────────────
-
-const sessions = new Map(); // token → Ablauf-Zeitstempel
-const loginFails = new Map(); // ip → { count, lockedUntil }
-
-const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest();
-
-function passwordOk(candidate) {
-  const secret = (process.env.ACCESS_SECRET || '').trim();
-  if (!secret) return false;
-  return crypto.timingSafeEqual(sha256(candidate), sha256(secret));
+function requireRole(minRole) {
+  return (req, res, next) => {
+    if (!req.user?.role || !hasRoleLevel(req.user.role, minRole)) {
+      return res.status(403).json({ error: 'Keine Berechtigung.' });
+    }
+    next();
+  };
 }
 
-function clientIp(req) {
-  // req.ip respektiert `trust proxy` (siehe app.set weiter unten): Express
-  // verwirft die vom Client frei setzbaren linken X-Forwarded-For-Eintraege und
-  // nimmt die Adresse, die der vertraute Proxy angehaengt hat.
-  //
-  // Vorher wurde der Header direkt geparst und der LINKESTE Wert genommen. Das
-  // war doppelt angreifbar: ein rotierender Fake-Header liess den
-  // Fehlversuchs-Zaehler nie hochlaufen (Bruteforce ohne Sperre), und ein
-  // konstanter Fake-Header mit der IP des Betreibers sperrte diesen gezielt aus.
-  //
-  // ipKeyGenerator() fasst IPv6 auf das /56-Praefix zusammen. Ohne das bekam
-  // JEDE Adresse eines Praefixes ihren eigenen Fehlversuchs-Zaehler — und ein
-  // einzelnes IPv6-Praefix umfasst mehr Adressen, als man je durchprobieren
-  // muesste. Die Aussperre nach fuenf Fehlversuchen war damit fuer jeden
-  // umgehbar, der IPv6 hat. IPv4 bleibt unveraendert, IPv4-mapped-IPv6
-  // (::ffff:1.2.3.4) wird auf die IPv4-Form normalisiert.
-  return ipKeyGenerator(req.ip || req.socket.remoteAddress || '?');
+function dashboardUser(req) {
+  return {
+    id: req.user?.userId || null,
+    username: req.user?.username || '',
+    role: req.user?.role || '',
+  };
 }
 
-function issueSession(res) {
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, Date.now() + config.web.sessionTtlMs);
-  if (sessions.size > 200) sessions.delete(sessions.keys().next().value);
-  res.setHeader(
-    'Set-Cookie',
-    `sid=${token}; Max-Age=${Math.floor(config.web.sessionTtlMs / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
-  );
-}
-
-function readSession(req) {
-  const raw = req.headers.cookie || '';
-  const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(raw);
-  if (!m) return false;
-  const expiry = sessions.get(m[1]);
-  if (!expiry || expiry < Date.now()) {
-    sessions.delete(m[1]);
-    return false;
-  }
-  return true;
-}
-
-function requireAuth(req, res, next) {
-  if (readSession(req)) return next();
-  if ((req.originalUrl || req.path).startsWith('/api/')) {
-    return res.status(401).json({ error: 'nicht angemeldet' });
-  }
-  return res.redirect('/login');
+function normalizeDashboardJid(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  if (/^\d{6,20}@(s\.whatsapp\.net|lid)$/i.test(raw)) return raw.toLowerCase();
+  const normalized = normalizePhoneNumber(raw);
+  return normalized ? `${normalized}@s.whatsapp.net` : null;
 }
 
 // ── App bauen ──────────────────────────────────────────────────────
@@ -237,53 +205,25 @@ export function createDashboard() {
   });
 
   // ── Login ──
-  const loginLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-
   app.get('/login', (req, res) => {
-    if (readSession(req)) return res.redirect('/');
+    if (validateSession(extractSessionToken(req.headers.cookie))) return res.redirect('/');
     sendAsset(req, res, 'login', 'no-store');
   });
 
-  app.post('/login', loginLimiter, (req, res) => {
-    const ip = clientIp(req);
-    const entry = loginFails.get(ip) || { count: 0, lockedUntil: 0 };
-    if (entry.lockedUntil > Date.now()) {
-      const mins = Math.ceil((entry.lockedUntil - Date.now()) / 60_000);
-      return res.status(429).json({ error: `Zu viele Fehlversuche — gesperrt für ${mins} Min.` });
-    }
-    const pw = String(req.body?.password || '');
-    if (pw && passwordOk(pw)) {
-      loginFails.delete(ip);
-      issueSession(res);
-      return res.json({ ok: true });
-    }
-    entry.count++;
-    if (entry.count >= config.web.loginMaxFails) {
-      entry.count = 0;
-      entry.lockedUntil = Date.now() + config.web.loginLockMinutes * 60_000;
-    }
-    loginFails.set(ip, entry);
-    if (loginFails.size > 500) loginFails.delete(loginFails.keys().next().value);
-    return res.status(401).json({ error: 'Falsches Passwort.' });
-  });
+  app.post('/login', (req, res) => handleDashboardLogin(req, res));
 
-  app.post('/logout', requireAuth, (req, res) => {
-    const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
-    if (m) sessions.delete(m[1]);
-    res.setHeader('Set-Cookie', 'sid=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict');
-    res.json({ ok: true });
-  });
+  app.post('/logout', requireDashboardAuth, (req, res) => handleDashboardLogout(req, res));
 
   // ── Panel-Assets (hinter Login) ──
-  app.get('/', requireAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
-  app.get('/qr', requireAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
+  app.get('/', requireDashboardAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
+  app.get('/qr', requireDashboardAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
   app.get('/app.css', (req, res) => sendAsset(req, res, '/app.css', 'public, max-age=31536000, immutable'));
   app.get('/app.js', (req, res) => sendAsset(req, res, '/app.js', 'public, max-age=31536000, immutable'));
   app.get('/theme-init.js', (req, res) => sendAsset(req, res, '/theme-init.js', 'public, max-age=31536000, immutable'));
 
   // ── API ──
   const api = asyncSafe(express.Router());
-  app.use('/api', requireAuth, api);
+  app.use('/api', requireDashboardAuth, api);
 
   api.get('/status', async (req, res) => {
     rolloverDay();
@@ -913,4 +853,3 @@ export function createDashboard() {
 
   return app;
 }
-
