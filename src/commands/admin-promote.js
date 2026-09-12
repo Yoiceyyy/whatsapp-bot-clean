@@ -3,7 +3,7 @@
 // Funktion: Personen in gespeicherten Gruppen befoerdern/herabstufen
 
 import { dbRows } from '../db.js';
-import { getGroupMeta, botIsAdminInMeta, normalizeId, resolveLid } from '../permissions.js';
+import { getGroupMeta, botIsAdminInMeta, normalizeId, resolveLid, invalidateGroupMeta } from '../permissions.js';
 import { logModerationAction } from '../permissions-new.js';
 import { state } from '../state.js';
 import { normalizePhoneNumber } from '../utils/phone.js';
@@ -225,6 +225,7 @@ async function runGroupAdminChange(ctx, { action, commandName, actionLabel, audi
         }
 
         await sock.groupParticipantsUpdate(row.jid, [actionId], action);
+        invalidateGroupMeta(row.jid);
         changed++;
       } catch (err) {
         console.error(`Error during ${action} in group ${row.jid}:`, err);

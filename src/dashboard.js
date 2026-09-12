@@ -29,7 +29,7 @@ import {
   invalidateGroupCache, cachedGroupCount,
 } from './services/query.js';
 import { createApiV1, API_BASE } from './api/index.js';
-import { requireDashboardAuth, handleDashboardLogin, handleDashboardLogout, extractSessionToken, validateSession } from './dashboard-auth.js';
+import { requireDashboardAuth, handleDashboardLogin, handleDashboardLogout, extractSessionToken, validateSession, revokeSessionsForUser } from './dashboard-auth.js';
 import { hasRoleLevel } from './api/permissions-rbac.js';
 import { addToAdminWhitelist, removeFromAdminWhitelist, getModerationAudit } from './permissions-new.js';
 import { createApiUser, listApiUsers, changeApiUserRole, disableApiUser, enableApiUser } from './api/auth.js';
@@ -225,6 +225,10 @@ export function createDashboard() {
   const api = asyncSafe(express.Router());
   app.use('/api', requireDashboardAuth, api);
 
+  api.get('/me', (req, res) => {
+    res.json({ user: dashboardUser(req) });
+  });
+
   api.get('/status', async (req, res) => {
     rolloverDay();
     res.json(await statusPayload());
@@ -271,7 +275,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/pairing-code', async (req, res) => {
+  api.post('/pairing-code', requireRole('admin'), async (req, res) => {
     const phone = String(req.body?.phoneNumber || '').replace(/\D/g, '');
     if (!/^\d{6,15}$/.test(phone)) {
       return res.status(400).json({ error: 'Bitte volle Nummer mit Ländervorwahl angeben (nur Ziffern, z. B. 4915112345678).' });
@@ -285,7 +289,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/relink', async (req, res) => {
+  api.post('/relink', requireRole('co_owner'), async (req, res) => {
     try {
       await forceRelink();
       await audit('relink', '', '', 'panel', '');
@@ -376,7 +380,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/groups/:jid/settings', async (req, res) => {
+  api.post('/groups/:jid/settings', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const { field, value } = req.body || {};
@@ -419,7 +423,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/groups/:jid/send', async (req, res) => {
+  api.post('/groups/:jid/send', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     const text = String(req.body?.text || '').trim();
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
@@ -431,7 +435,7 @@ export function createDashboard() {
     res.json({ ok: !!result });
   });
 
-  api.post('/groups/:jid/kick', async (req, res) => {
+  api.post('/groups/:jid/kick', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const user = String(req.body?.user || '');
@@ -441,7 +445,7 @@ export function createDashboard() {
     res.json({ ok });
   });
 
-  api.post('/groups/:jid/ban', async (req, res) => {
+  api.post('/groups/:jid/ban', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const user = String(req.body?.user || '');
@@ -466,7 +470,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/commands/:name', async (req, res) => {
+  api.post('/commands/:name', requireRole('admin'), async (req, res) => {
     const name = req.params.name;
     if (!registry.some((c) => c.name === name)) return res.status(404).json({ error: 'Unbekannter Befehl.' });
     if (name === 'hilfe') return res.status(400).json({ error: '!hilfe kann nicht deaktiviert werden.' });
@@ -480,7 +484,7 @@ export function createDashboard() {
     maintenance: getGlobalFlag('maintenance'),
   });
   api.get('/global', (req, res) => res.json(globalPayload()));
-  api.post('/global', async (req, res) => {
+  api.post('/global', requireRole('co_owner'), async (req, res) => {
     const key = String(req.body?.key || '');
     if (!GLOBAL_KEYS[key]) return res.status(400).json({ error: 'Unbekanntes System.' });
     const value = !!req.body?.value;
@@ -489,7 +493,7 @@ export function createDashboard() {
     res.json({ ok: true, ...globalPayload() });
   });
 
-  api.post('/custom', async (req, res) => {
+  api.post('/custom', requireRole('admin'), async (req, res) => {
     const { type, name, reply } = req.body || {};
     const key = String(name || '').toLowerCase().trim();
     const text = String(reply || '').trim();
@@ -512,7 +516,7 @@ export function createDashboard() {
     res.json({ ok: true });
   });
 
-  api.delete('/custom/:type/:name', async (req, res) => {
+  api.delete('/custom/:type/:name', requireRole('admin'), async (req, res) => {
     const key = String(req.params.name || '').toLowerCase();
     if (req.params.type === 'faq') await dbRun('DELETE FROM faq WHERE keyword = ?', [key]);
     else await dbRun('DELETE FROM custom_commands WHERE name = ?', [key]);
@@ -522,7 +526,7 @@ export function createDashboard() {
 
   api.get('/moderation', async (req, res) => {
     const now = Date.now();
-    const [warns, mutes, bans, auditRows] = await Promise.all([
+    const [warns, mutes, bans, legacyAuditRows, moderationAuditRows] = await Promise.all([
       dbRows(
         `SELECT id, group_jid, user_jid, reason, created_at, expires_at FROM warnings
          WHERE expires_at > ? ORDER BY created_at DESC LIMIT 50`, [now]
@@ -530,7 +534,22 @@ export function createDashboard() {
       dbRows('SELECT group_jid, user_jid, until, reason FROM mutes WHERE until > ? LIMIT 50', [now]),
       dbRows('SELECT group_jid, user_jid, reason, created_at FROM bans ORDER BY created_at DESC LIMIT 50', []),
       dbRows('SELECT action, group_jid, target, by_jid, detail, created_at FROM audit_log ORDER BY created_at DESC LIMIT 30', []),
+      getModerationAudit({ limitDays: 90, limit: 30 }),
     ]);
+    const auditRows = [
+      ...legacyAuditRows.map((r) => ({ ...r, source: 'audit_log' })),
+      ...moderationAuditRows.map((r) => ({
+        action: r.action,
+        group_jid: r.group_jid || '',
+        target: r.target || '',
+        by_jid: r.actor || '',
+        detail: r.detail || '',
+        created_at: r.created_at,
+        source: 'moderation_audit',
+      })),
+    ]
+      .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))
+      .slice(0, 30);
 
     // Anzeigenamen fuer alle beteiligten Personen in EINEM Durchgang. Die
     // rohen user_jid/target/by_jid bleiben erhalten — die Aktionen im Panel
@@ -556,7 +575,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/moderation/clear', async (req, res) => {
+  api.post('/moderation/clear', requireRole('co_owner'), async (req, res) => {
     const { type, group, user } = req.body || {};
     if (!group || !user) return res.status(400).json({ error: 'Gruppe/Nutzer fehlt.' });
     try {
@@ -569,6 +588,103 @@ export function createDashboard() {
       logError(err, 'panel.modClear');
       res.status(500).json({ error: 'Aufheben fehlgeschlagen.' });
     }
+  });
+
+  api.get('/admin/whitelist', requireRole('co_owner'), async (_req, res) => {
+    try {
+      const rows = await dbRows(
+        'SELECT user_jid, added_by, added_at, reason FROM admin_whitelist ORDER BY added_at DESC LIMIT 100',
+        []
+      );
+      const ids = await resolveIdentities([
+        ...rows.map((r) => r.user_jid),
+        ...rows.map((r) => r.added_by),
+      ]);
+      res.json({
+        whitelist: rows.map((r) => ({
+          ...r,
+          user: ids.get(String(r.user_jid)) || null,
+          addedByUser: ids.get(String(r.added_by)) || null,
+        })),
+      });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelist');
+      res.status(500).json({ error: 'Whitelist konnte nicht geladen werden.' });
+    }
+  });
+
+  api.post('/admin/whitelist/add', requireRole('co_owner'), async (req, res) => {
+    const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
+    const reason = String(req.body?.reason || '').trim().slice(0, 200);
+    if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
+    const actor = dashboardUser(req);
+    const added = await addToAdminWhitelist(userJid, actor.id || actor.username || 'panel', reason);
+    if (!added) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht gespeichert werden.' });
+    await audit('admin-whitelist-add', '', userJid, actor.username || 'panel', reason);
+    res.json({ ok: true });
+  });
+
+  api.post('/admin/whitelist/remove', requireRole('co_owner'), async (req, res) => {
+    const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
+    if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
+    const actor = dashboardUser(req);
+    const removed = await removeFromAdminWhitelist(userJid);
+    if (!removed) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht entfernt werden.' });
+    await audit('admin-whitelist-remove', '', userJid, actor.username || 'panel', '');
+    res.json({ ok: true });
+  });
+
+  api.get('/admin/accounts', requireRole('owner'), async (_req, res) => {
+    try {
+      const users = await listApiUsers();
+      res.json({
+        users: users.map((u) => ({
+          id: u.id,
+          username: u.username,
+          role: u.role,
+          disabled: Number(u.disabled) === 1,
+          created_at: Number(u.created_at) || 0,
+        })),
+      });
+    } catch (err) {
+      logError(err, 'panel.accounts');
+      res.status(500).json({ error: 'Zugänge konnten nicht geladen werden.' });
+    }
+  });
+
+  api.post('/admin/accounts', requireRole('owner'), async (req, res) => {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    const role = String(req.body?.role || '').trim();
+    const result = await createApiUser(username, password, role);
+    if (result?.error) return res.status(400).json({ error: result.error });
+    await audit('dashboard-account-create', '', result.id, dashboardUser(req).username || 'panel', role);
+    res.status(201).json({ ok: true, user: result });
+  });
+
+  api.post('/admin/accounts/:id/role', requireRole('owner'), async (req, res) => {
+    const userId = String(req.params.id || '');
+    const role = String(req.body?.role || '').trim();
+    if (!userId || !role) return res.status(400).json({ error: 'Nutzer und Rolle fehlen.' });
+    const changed = await changeApiUserRole(userId, role);
+    if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
+    await audit('dashboard-account-role', '', userId, dashboardUser(req).username || 'panel', role);
+    res.json({ ok: true });
+  });
+
+  api.post('/admin/accounts/:id/disabled', requireRole('owner'), async (req, res) => {
+    const userId = String(req.params.id || '');
+    const disabled = !!req.body?.disabled;
+    if (!userId) return res.status(400).json({ error: 'Nutzer fehlt.' });
+    const self = dashboardUser(req);
+    if (self.id && self.id === userId && disabled) {
+      return res.status(400).json({ error: 'Der eigene Zugang kann nicht deaktiviert werden.' });
+    }
+    const ok = disabled ? await disableApiUser(userId) : await enableApiUser(userId);
+    if (!ok) return res.status(400).json({ error: 'Status konnte nicht geändert werden.' });
+    if (disabled) revokeSessionsForUser(userId);
+    await audit('dashboard-account-disabled', '', userId, self.username || 'panel', disabled ? '1' : '0');
+    res.json({ ok: true });
   });
 
   // Stacktraces enthalten interne Dateipfade und Zeilennummern. Der Ring-Buffer
@@ -684,7 +800,7 @@ export function createDashboard() {
     }
   });
 
-  api.delete('/agenda/schedule/:id', async (req, res) => {
+  api.delete('/agenda/schedule/:id', requireRole('admin'), async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!id) return res.status(400).json({ error: 'Ungültige Nummer.' });
     await dbRun('DELETE FROM scheduled_messages WHERE id = ? AND done = 0', [id]);
@@ -692,7 +808,7 @@ export function createDashboard() {
   });
 
   let lastPanelRestartAt = 0;
-  api.post('/restart', async (req, res) => {
+  api.post('/restart', requireRole('owner'), async (req, res) => {
     const wait = config.web.restartCooldownMs - (Date.now() - lastPanelRestartAt);
     if (wait > 0) {
       return res.status(429).json({ error: `Cooldown aktiv — noch ${Math.ceil(wait / 1000)} s warten.` });
@@ -715,7 +831,7 @@ export function createDashboard() {
   });
 
   let lastWipeAt = 0;
-  api.post('/db/wipe', async (req, res) => {
+  api.post('/db/wipe', requireRole('owner'), async (req, res) => {
     // Strikt auf den String pruefen, nicht auf String(...). JavaScript wandelt
     // ein einelementiges Array in genau sein Element um: String(['LÖSCHEN'])
     // ist 'LÖSCHEN'. Ein Client, der `confirm` versehentlich als Array oder

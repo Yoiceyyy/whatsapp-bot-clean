@@ -70,6 +70,12 @@ function revokeSession(token) {
   sessions.delete(token);
 }
 
+function revokeSessionsForUser(userId) {
+  for (const [token, session] of sessions.entries()) {
+    if (session?.userId === userId) sessions.delete(token);
+  }
+}
+
 /**
  * Extracts token from cookie header.
  * @param {string} cookieHeader
@@ -250,11 +256,6 @@ export async function handleDashboardLogin(req, res) {
     return res.status(401).json({ error: 'Account disabled' });
   }
 
-  if (user.role === 'viewer') {
-    recordLoginFail(ip);
-    return res.status(403).json({ error: 'Viewer accounts cannot access the dashboard' });
-  }
-
   // Verify password
   const isValid = await validateApiPassword(password, user.pw_hash, user.pw_salt);
   if (!isValid) {
@@ -288,4 +289,4 @@ export function handleDashboardLogout(req, res) {
 
 // ── Exports for testing/debugging ──────────────────────────────────────────────────────────
 
-export { extractSessionToken, validateSession, revokeSession, isRateLimited };
+export { extractSessionToken, validateSession, revokeSession, revokeSessionsForUser, isRateLimited };

@@ -22,8 +22,9 @@ process.env.OWNER_NUMBERS = '491700000000';
 process.env.DATABASE_URL = 'file:' + join(root, '.test-panel.db');
 process.env.DATABASE_KEY = 'unused';
 
-const { initDb } = await import('../src/db.js');
+const { initDb, dbRun } = await import('../src/db.js');
 const { createDashboard } = await import('../src/dashboard.js');
+const { logModerationAction } = await import('../src/permissions-new.js');
 
 let server;
 let base;
@@ -97,7 +98,7 @@ test('nach dem Abmelden ist die Sitzung wirklich ungueltig', async () => {
 
 test('alle Leseansichten antworten mit 200', async () => {
   for (const path of [
-    '/api/status', '/api/commands', '/api/global', '/api/moderation',
+    '/api/status', '/api/commands', '/api/global', '/api/moderation', '/api/me',
     '/api/stats', '/api/agenda', '/api/logs', '/api/users?filter=all', '/api/qr',
   ]) {
     const res = await fetch(`${base}${path}`, { headers: auth() });
@@ -171,4 +172,56 @@ test('LIKE-Platzhalter in der Suche sind entschaerft', async () => {
   });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).users.length, 0, '% darf keine Wildcard sein');
+});
+
+test('Admin-Whitelist ist über das Dashboard les- und schreibbar', async () => {
+  let res = await fetch(`${base}/api/admin/whitelist`, { headers: auth() });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).whitelist, []);
+
+  res = await post('/api/admin/whitelist/add', { user: '49170123456', reason: 'Test' });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: auth() });
+  const body = await res.json();
+  assert.equal(body.whitelist.length, 1);
+  assert.equal(body.whitelist[0].user_jid, '49170123456@s.whatsapp.net');
+
+  res = await post('/api/admin/whitelist/remove', { user: '49170123456' });
+  assert.equal(res.status, 200);
+});
+
+test('Dashboard kann neue Zugänge anlegen und auflisten', async () => {
+  let res = await post('/api/admin/accounts', {
+    username: 'neueradmin',
+    password: 'ein-sehr-langes-passwort',
+    role: 'co_owner',
+  });
+  assert.equal(res.status, 201);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: auth() });
+  const body = await res.json();
+  const created = body.users.find((u) => u.username === 'neueradmin');
+  assert.ok(created, 'neuer Zugang fehlt in der Liste');
+  assert.equal(created.role, 'co_owner');
+});
+
+test('Moderationsansicht zeigt auch moderation_audit-Einträge', async () => {
+  await dbRun(
+    'INSERT INTO audit_log (action, group_jid, target, by_jid, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ['kick', '1@g.us', '491700000001@s.whatsapp.net', 'panel', 'legacy', Date.now() - 1000]
+  );
+  await logModerationAction(
+    'admin.whitelist.add',
+    '491700000000@s.whatsapp.net',
+    '491700000002@s.whatsapp.net',
+    null,
+    'modern'
+  );
+
+  const res = await fetch(`${base}/api/moderation`, { headers: auth() });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.audit.some((a) => a.detail === 'legacy'));
+  assert.ok(body.audit.some((a) => a.detail === 'modern'));
 });
