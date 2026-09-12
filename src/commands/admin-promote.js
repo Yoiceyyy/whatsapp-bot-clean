@@ -76,8 +76,8 @@ export default [
               continue;
             }
 
-            // Zum Admin machen
-            await state.sock.groupParticipantsUpdate(row.jid, [jid], 'promote');
+            // Zum Admin machen - nutze ctx.sock statt state.sock
+            await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'promote');
             promoted++;
           } catch (err) {
             console.error(`Error promoting in group ${row.jid}:`, err);
@@ -174,8 +174,8 @@ export default [
               continue;
             }
 
-            // Admin-Status entziehen
-            await state.sock.groupParticipantsUpdate(row.jid, [jid], 'demote');
+            // Admin-Status entziehen - nutze ctx.sock statt state.sock
+            await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'demote');
             demoted++;
           } catch (err) {
             console.error(`Error demoting in group ${row.jid}:`, err);
