@@ -2488,7 +2488,7 @@ function renderSettings(){
           r.reason || '—'
         ];
       }, function(r){
-        return h('button', { class:'small ghost', onclick:function(){
+        return h('button', { class:'small ghost', 'aria-label':'Whitelist-Eintrag für ' + userLabel(r.user, r.user_jid) + ' entfernen', onclick:function(){
           api('/admin/whitelist/remove', { method:'POST', body:{ user: r.user_jid } })
             .then(function(){ toast('✅ Entfernt'); render(); })
             .catch(function(e){ toast('⚠️ ' + e.message); });
@@ -2547,7 +2547,7 @@ function renderSettings(){
           h('option', { value:'owner' }, ['Owner'])
         ]);
         roleSelect.value = u.role;
-        if (currentUser && currentUser.id === u.id) roleSelect.disabled = true;
+        if ((currentUser && currentUser.id === u.id) || u.disabled) roleSelect.disabled = true;
         return [u.username, roleSelect, u.disabled ? 'deaktiviert' : 'aktiv'];
       }, function(u){
         return h('button', { class:'small ghost', onclick:function(){

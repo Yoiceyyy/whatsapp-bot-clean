@@ -250,7 +250,7 @@ export async function listApiUsers() {
  * Initializes the auth system with a first owner user.
  * Called during preflight checks if no users exist.
  * @param {string} ownerPassword - From ACCESS_SECRET
- * @returns {Promise<{success: boolean, message: string}>}
+ * @returns {Promise<{success: boolean, message: string, userId?: string, username?: string, role?: string}>}
  */
 export async function initializeAuthSystem(ownerPassword) {
   try {
@@ -267,6 +267,9 @@ export async function initializeAuthSystem(ownerPassword) {
     return {
       success: true,
       message: 'Auth system initialized. First owner user created.',
+      userId: result.id,
+      username: result.username,
+      role: result.role,
     };
   } catch (err) {
     logError(err, 'initializeAuthSystem');

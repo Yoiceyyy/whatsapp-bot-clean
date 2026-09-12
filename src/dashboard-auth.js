@@ -209,7 +209,7 @@ export async function handleDashboardLogin(req, res) {
     const entry = loginFails.get(ip);
     const remainMins = Math.ceil((entry.lockedUntil - Date.now()) / 60_000);
     return res.status(429).json({
-      error: `Too many attempts. Locked for ${remainMins} minutes.`,
+      error: `Zu viele Fehlversuche. Gesperrt für ${remainMins} Minuten.`,
     });
   }
 
@@ -223,11 +223,11 @@ export async function handleDashboardLogin(req, res) {
       const init = await initializeAuthSystem(config.accessSecret);
       if (!init.success) {
         logError(new Error(init.message), 'dashboard.bootstrapLogin');
-        return res.status(500).json({ error: 'Bootstrap failed' });
+        return res.status(500).json({ error: 'Erstinitialisierung des Dashboard-Zugangs fehlgeschlagen.' });
       }
 
       clearLoginFails(ip);
-      const token = issueSession('usr_owner', 'owner', 'owner');
+      const token = issueSession(init.userId || 'usr_owner', init.username || 'owner', init.role || 'owner');
       res.setHeader(
         'Set-Cookie',
         `${SESSION_COOKIE}=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
@@ -236,32 +236,32 @@ export async function handleDashboardLogin(req, res) {
     }
     // Reject if not matching bootstrap credentials
     recordLoginFail(ip);
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: 'Ungültige Zugangsdaten.' });
   }
 
   // Normal mode: authenticate against api_users
   const username = rawUsername.toLowerCase();
   if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password required' });
+    return res.status(400).json({ error: 'Benutzername und Passwort sind erforderlich.' });
   }
 
   const user = await getApiUser(username);
   if (!user) {
     recordLoginFail(ip);
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: 'Ungültige Zugangsdaten.' });
   }
 
   if (user.disabled) {
     logWarn(`🚫 Login attempt with disabled user: ${username}`, 'dashboard-auth');
     recordLoginFail(ip);
-    return res.status(401).json({ error: 'Account disabled' });
+    return res.status(401).json({ error: 'Zugang ist deaktiviert.' });
   }
 
   // Verify password
   const isValid = await validateApiPassword(password, user.pw_hash, user.pw_salt);
   if (!isValid) {
     recordLoginFail(ip);
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: 'Ungültige Zugangsdaten.' });
   }
 
   // Success

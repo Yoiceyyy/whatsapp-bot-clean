@@ -30,18 +30,25 @@ let server;
 let base;
 let cookie;
 
+async function login(body) {
+  const res = await fetch(`${base}/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return {
+    res,
+    cookie: (res.headers.get('set-cookie') || '').split(';')[0],
+  };
+}
+
 before(async () => {
   await initDb();
   server = createDashboard().listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 
-  const res = await fetch(`${base}/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
-  });
-  cookie = (res.headers.get('set-cookie') || '').split(';')[0];
+  ({ cookie } = await login({ password: SECRET }));
 });
 
 after(() => server?.close());
@@ -215,6 +222,45 @@ test('Dashboard kann neue Zugänge anlegen und auflisten', async () => {
   const updated = (await res.json()).users.find((u) => u.id === created.id);
   assert.equal(updated.role, 'admin');
   assert.equal(updated.disabled, true);
+});
+
+test('Rollen-Gates schützen Whitelist und Accountverwaltung', async () => {
+  let res = await post('/api/admin/accounts', {
+    username: 'vieweruser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'viewer',
+  });
+  assert.equal(res.status, 201);
+
+  res = await post('/api/admin/accounts', {
+    username: 'adminuser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'admin',
+  });
+  assert.equal(res.status, 201);
+
+  res = await post('/api/admin/accounts', {
+    username: 'coowneruser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'co_owner',
+  });
+  assert.equal(res.status, 201);
+
+  const viewerLogin = await login({ username: 'vieweruser', password: 'ein-sehr-langes-passwort' });
+  const adminLogin = await login({ username: 'adminuser', password: 'ein-sehr-langes-passwort' });
+  const coOwnerLogin = await login({ username: 'coowneruser', password: 'ein-sehr-langes-passwort' });
+
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: viewerLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: adminLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: coOwnerLogin.cookie } });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: { cookie: coOwnerLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/accounts`, { headers: { cookie: adminLogin.cookie } });
+  assert.equal(res.status, 403);
 });
 
 test('Moderationsansicht zeigt auch moderation_audit-Einträge', async () => {

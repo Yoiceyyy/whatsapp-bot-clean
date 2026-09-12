@@ -32,7 +32,14 @@ import { createApiV1, API_BASE } from './api/index.js';
 import { requireDashboardAuth, handleDashboardLogin, handleDashboardLogout, extractSessionToken, validateSession, revokeSessionsForUser } from './dashboard-auth.js';
 import { hasRoleLevel } from './api/permissions-rbac.js';
 import { addToAdminWhitelist, removeFromAdminWhitelist, getModerationAudit } from './permissions-new.js';
-import { createApiUser, listApiUsers, changeApiUserRole, disableApiUser, enableApiUser } from './api/auth.js';
+import {
+  createApiUser,
+  listApiUsers,
+  changeApiUserRole,
+  disableApiUser,
+  enableApiUser,
+  getApiUserById,
+} from './api/auth.js';
 import { normalizePhoneNumber } from './utils/phone.js';
 
 // ── Statische Assets: Versionierung + Vorab-Kompression ───────────
@@ -121,6 +128,19 @@ function dashboardUser(req) {
     username: req.user?.username || '',
     role: req.user?.role || '',
   };
+}
+
+async function requireActiveDashboardUser(req, res) {
+  const userId = req.user?.userId;
+  if (!userId) return false;
+  const liveUser = await getApiUserById(userId);
+  if (!liveUser || Number(liveUser.disabled) === 1) {
+    revokeSessionsForUser(userId);
+    res.setHeader('Set-Cookie', 'sid=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict');
+    res.status(401).json({ error: 'Sitzung abgelaufen.' });
+    return false;
+  }
+  return liveUser;
 }
 
 function normalizeDashboardJid(input) {
@@ -678,6 +698,7 @@ export function createDashboard() {
     const password = String(req.body?.password || '');
     const role = String(req.body?.role || '').trim();
     try {
+      if (!(await requireActiveDashboardUser(req, res))) return;
       const result = await createApiUser(username, password, role);
       if (result?.error) return res.status(400).json({ error: result.error });
       await audit('dashboard-account-create', '', result.id, dashboardUser(req).username || 'panel', role);
@@ -694,8 +715,14 @@ export function createDashboard() {
     if (!userId || !role) return res.status(400).json({ error: 'Nutzer und Rolle fehlen.' });
     try {
       const self = dashboardUser(req);
+      if (!(await requireActiveDashboardUser(req, res))) return;
       if (self.id && self.id === userId && role !== 'owner') {
         return res.status(400).json({ error: 'Der eigene Owner-Zugang kann nicht herabgestuft werden.' });
+      }
+      const target = await getApiUserById(userId);
+      if (!target) return res.status(404).json({ error: 'Zugang nicht gefunden.' });
+      if (Number(target.disabled) === 1) {
+        return res.status(400).json({ error: 'Deaktivierte Zugänge müssen erst wieder aktiviert werden.' });
       }
       const changed = await changeApiUserRole(userId, role);
       if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
@@ -713,9 +740,12 @@ export function createDashboard() {
     if (!userId) return res.status(400).json({ error: 'Nutzer fehlt.' });
     try {
       const self = dashboardUser(req);
+      if (!(await requireActiveDashboardUser(req, res))) return;
       if (self.id && self.id === userId && disabled) {
         return res.status(400).json({ error: 'Der eigene Zugang kann nicht deaktiviert werden.' });
       }
+      const target = await getApiUserById(userId);
+      if (!target) return res.status(404).json({ error: 'Zugang nicht gefunden.' });
       const ok = disabled ? await disableApiUser(userId) : await enableApiUser(userId);
       if (!ok) return res.status(400).json({ error: 'Status konnte nicht geändert werden.' });
       if (disabled) revokeSessionsForUser(userId);
