@@ -65,8 +65,8 @@ async function loadGroups(groupName) {
   }
 
   const groups = await dbRows(
-    'SELECT jid, name FROM groups WHERE jid LIKE ? AND LOWER(COALESCE(name, \'\')) = LOWER(?) ORDER BY jid',
-    [GROUP_LIKE, trimmed]
+    'SELECT jid, name FROM groups WHERE jid LIKE ? AND (LOWER(COALESCE(name, \'\')) = LOWER(?) OR LOWER(jid) = LOWER(?)) ORDER BY jid',
+    [GROUP_LIKE, trimmed, trimmed]
   );
 
   if (!groups.length) {
