@@ -3,7 +3,7 @@
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { OWNER_NUMBERS, BOT_OWNER_NUMBERS } from './config.js';
 import { state } from './state.js';
-import { logError } from './logger.js';
+import { logError, logWarn } from './logger.js';
 import { dbBatch } from './db.js';
 import { ingestParticipants } from './identity.js';
 
@@ -43,6 +43,12 @@ export async function getGroupMeta(groupJid, force = false) {
     learnLidMappings(meta);
     return meta;
   } catch (err) {
+    const statusCode = Number(err?.output?.statusCode || err?.data || 0);
+    const msg = String(err?.message || '').trim().toLowerCase();
+    if (statusCode === 403 || msg === 'forbidden') {
+      logWarn(`Kein Zugriff auf Gruppe ${groupJid} (forbidden)`, 'groupMetadata');
+      return cached?.meta || null;
+    }
     logError(err, 'groupMetadata');
     return cached?.meta || null;
   }
