@@ -1382,7 +1382,10 @@ try {
 } catch(e) {
   setInterval(function(){ api('/status').then(applyStatus).catch(function(){}); }, 4000);
 }
-api('/me').then(function(res){ currentUser = res.user || null; }).catch(function(){});
+api('/me').then(function(res){
+  currentUser = res.user || null;
+  if (current === 'settings') render();
+}).catch(function(){});
 api('/status').then(applyStatus).catch(function(){});
 
 function stopQrPolling(){
@@ -2544,6 +2547,7 @@ function renderSettings(){
           h('option', { value:'owner' }, ['Owner'])
         ]);
         roleSelect.value = u.role;
+        if (currentUser && currentUser.id === u.id) roleSelect.disabled = true;
         return [u.username, roleSelect, u.disabled ? 'deaktiviert' : 'aktiv'];
       }, function(u){
         return h('button', { class:'small ghost', onclick:function(){

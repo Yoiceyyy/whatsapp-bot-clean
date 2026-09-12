@@ -677,9 +677,13 @@ export function createDashboard() {
     const userId = String(req.params.id || '');
     const role = String(req.body?.role || '').trim();
     if (!userId || !role) return res.status(400).json({ error: 'Nutzer und Rolle fehlen.' });
+    const self = dashboardUser(req);
+    if (self.id && self.id === userId && role !== 'owner') {
+      return res.status(400).json({ error: 'Der eigene Owner-Zugang kann nicht herabgestuft werden.' });
+    }
     const changed = await changeApiUserRole(userId, role);
     if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
-    await audit('dashboard-account-role', '', userId, dashboardUser(req).username || 'panel', role);
+    await audit('dashboard-account-role', '', userId, self.username || 'panel', role);
     res.json({ ok: true });
   });
 
