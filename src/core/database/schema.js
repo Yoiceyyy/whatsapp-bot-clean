@@ -10,6 +10,7 @@ export const DATA_TABLES = [
   'group_daily', 'command_toggles', 'blocked_words', 'antiraid',
   'audit_log', 'ai_usage', 'members', 'nightmode', 'contacts',
   'user_profiles', 'groups', 'daily_stats', 'afk',
+  'admin_whitelist', 'admin_suspensions', 'moderation_audit',
 ];
 
 /**
@@ -49,7 +50,7 @@ export async function initDb() {
   const db = getDb();
   
   const schemas = [
-    `CREATE TABLE IF NOT EXISTS group_settings (jid TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, antilink INTEGER DEFAULT 0, antispam INTEGER DEFAULT 0, blacklist_on INTEGER DEFAULT 1, welcome INTEGER DEFAULT 0, rules TEXT, welcome_text TEXT, levelup_announce INTEGER DEFAULT 1, slowmode_secs INTEGER DEFAULT 0, weekly_report INTEGER DEFAULT 0, last_weekly_report TEXT)`,
+    `CREATE TABLE IF NOT EXISTS group_settings (jid TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, antilink INTEGER DEFAULT 0, antispam INTEGER DEFAULT 0, blacklist_on INTEGER DEFAULT 1, welcome INTEGER DEFAULT 0, rules TEXT, welcome_text TEXT, levelup_announce INTEGER DEFAULT 0, slowmode_secs INTEGER DEFAULT 0, weekly_report INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS xp (group_jid TEXT, user_jid TEXT, xp INTEGER DEFAULT 0, messages INTEGER DEFAULT 0, name TEXT, PRIMARY KEY (group_jid, user_jid))`,
     `CREATE TABLE IF NOT EXISTS levels (group_jid TEXT, user_jid TEXT, level INTEGER DEFAULT 0, PRIMARY KEY (group_jid, user_jid))`,
     `CREATE TABLE IF NOT EXISTS command_toggles (name TEXT PRIMARY KEY, enabled INTEGER DEFAULT 1)`,
@@ -72,17 +73,12 @@ export async function initDb() {
     `CREATE TABLE IF NOT EXISTS faq (keyword TEXT PRIMARY KEY, answer TEXT, by_jid TEXT, created_at INTEGER)`,
     `CREATE TABLE IF NOT EXISTS nightmode (group_jid TEXT PRIMARY KEY, enabled INTEGER DEFAULT 0, start_hhmm TEXT DEFAULT '22:00', end_hhmm TEXT DEFAULT '07:00', is_closed INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS custom_commands (name TEXT PRIMARY KEY, reply TEXT, by_jid TEXT, created_at INTEGER)`,
-    // commands/afk.js liest und schreibt diese Tabelle seit jeher — angelegt
-    // wurde sie nie. loadAfk() bekam beim Start still ein leeres Ergebnis
-    // (dbRows glaettet den Fehler), und jeder Schreibvorgang lief in ein
-    // .catch(() => {}). AFK funktionierte damit nur im RAM und war nach jedem
-    // Neustart weg, waehrend im Panel-Log "no such table: afk" auflief.
     `CREATE TABLE IF NOT EXISTS afk (user_jid TEXT PRIMARY KEY, reason TEXT, since INTEGER)`,
 
     // ── Control API (Phase 2) ────────────────────────────────────────
     // Zugaenge fuer die spaetere Android-App. Passwoerter als scrypt-Hash mit
     // eigenem Salt je Nutzer; der Klartext existiert nur im Request.
-    `CREATE TABLE IF NOT EXISTS api_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, pw_hash TEXT NOT NULL, pw_salt TEXT NOT NULL, role TEXT NOT NULL, created_at INTEGER, disabled INTEGER DEFAULT 0)`,
+    `CREATE TABLE IF NOT EXISTS api_users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, pw_hash TEXT NOT NULL, pw_salt TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'admin', created_at INTEGER, disabled INTEGER DEFAULT 0)`,
     // Ein Eintrag je gekoppeltem Geraet. Ueber revoked_at laesst sich ein
     // einzelnes Geraet abmelden, ohne die anderen zu stoeren.
     `CREATE TABLE IF NOT EXISTS api_sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_label TEXT, app_version TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)`,
@@ -104,6 +100,17 @@ export async function initDb() {
     //   verified_name = Contact.verifiedName (Business-Konten)
     //   known_from    = 'group' | 'contacts' | 'message'
     `CREATE TABLE IF NOT EXISTS contacts (user_jid TEXT PRIMARY KEY, user_lid TEXT, push_name TEXT, contact_name TEXT, verified_name TEXT, known_from TEXT, first_seen INTEGER, last_active INTEGER)`,
+    
+    // ── Role-Based Permissions System (Phase 3) ───────────────────────────
+    // Admin-Whitelist: Telefonnummern, die als Administratoren freigegeben sind
+    `CREATE TABLE IF NOT EXISTS admin_whitelist (user_jid TEXT PRIMARY KEY, added_by TEXT, added_at INTEGER, reason TEXT)`,
+    
+    // Admin-Suspensionen: Temporäre Sperrungen mit Start- und Endzeitpunkt
+    `CREATE TABLE IF NOT EXISTS admin_suspensions (user_jid TEXT PRIMARY KEY, suspended_by TEXT, suspended_at INTEGER, until INTEGER, reason TEXT, active INTEGER DEFAULT 1)`,
+    
+    // Moderation-Audit: Detailliertes Protokoll aller Moderationsaktionen
+    `CREATE TABLE IF NOT EXISTS moderation_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, actor TEXT, target TEXT, group_jid TEXT, detail TEXT, created_at INTEGER)`,
+    
     `CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_warnings_expires ON warnings(expires_at)`,
     // Die Nutzersuche schlaegt ueber alle Personen-Tabellen auf user_jid zu.
@@ -111,7 +118,12 @@ export async function initDb() {
     `CREATE INDEX IF NOT EXISTS idx_xp_user ON xp(user_jid)`,
     `CREATE INDEX IF NOT EXISTS idx_warnings_user ON warnings(user_jid)`,
     // Die Nutzersuche schlaegt ueber die LID zurueck auf die Person.
-    `CREATE INDEX IF NOT EXISTS idx_contacts_lid ON contacts(user_lid)`
+    `CREATE INDEX IF NOT EXISTS idx_contacts_lid ON contacts(user_lid)`,
+    // Indizes für neue Admin-Tabellen
+    `CREATE INDEX IF NOT EXISTS idx_admin_whitelist_added ON admin_whitelist(added_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_admin_suspensions_until ON admin_suspensions(until)`,
+    `CREATE INDEX IF NOT EXISTS idx_moderation_audit_created ON moderation_audit(created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_moderation_audit_actor ON moderation_audit(actor)`,
   ];
 
   for (const sql of schemas) {
