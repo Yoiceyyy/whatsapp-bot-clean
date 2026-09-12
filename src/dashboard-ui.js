@@ -23,6 +23,8 @@ export const LOGIN_HTML = `<!doctype html>
     </div>
     <h1>${BOT_NAME}</h1>
     <p class="sub">Betriebskonsole — Anmeldung erforderlich</p>
+    <label for="username">Benutzername</label>
+    <input id="username" type="text" autocomplete="username" required>
     <label for="pw">Passwort</label>
     <input id="pw" type="password" autocomplete="current-password" required autofocus>
     <button type="submit" id="loginBtn">Anmelden</button>
@@ -945,7 +947,10 @@ if (loginForm) {
     btn.disabled = true; err.textContent = '';
     fetch('/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ password: document.getElementById('pw').value })
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('pw').value
+      })
     }).then(function(r){ return r.json().then(function(j){ return { ok:r.ok, j:j }; }); })
       .then(function(res){
         if (res.ok) { location.href = '/'; }
@@ -997,6 +1002,7 @@ var TABS = NAV_GROUPS.reduce(function(all, g){ return all.concat(g.items); }, []
 var current = location.pathname === '/qr' ? 'qr' : (location.hash.replace('#','') || 'home');
 var status = null;
 var qrPollTimer = null;
+var currentUser = null;
 
 function h(tag, attrs, children){
   var el = document.createElement(tag);
@@ -1028,6 +1034,10 @@ function api(path, opts){
     if (r.status === 401) { location.href = '/login'; throw new Error('auth'); }
     return r.json().then(function(j){ if (!r.ok) throw new Error(j.error || 'Fehler'); return j; });
   });
+}
+function hasRole(role){
+  var lv = { viewer:1, admin:2, co_owner:3, owner:4 };
+  return (lv[currentUser && currentUser.role] || 0) >= (lv[role] || 999);
 }
 function fmtUptime(ms){
   var s = Math.floor(ms/1000), d = Math.floor(s/86400), hh = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
@@ -1372,6 +1382,10 @@ try {
 } catch(e) {
   setInterval(function(){ api('/status').then(applyStatus).catch(function(){}); }, 4000);
 }
+api('/me').then(function(res){
+  currentUser = res.user || null;
+  if (current === 'settings') render();
+}).catch(function(){});
 api('/status').then(applyStatus).catch(function(){});
 
 function stopQrPolling(){
@@ -2326,6 +2340,13 @@ function renderLogs(){
 }
 
 function renderSettings(){
+  if (!currentUser) {
+    api('/me').then(function(res){ currentUser = res.user || null; content.innerHTML = ''; renderSettings(); })
+      .catch(function(){});
+    content.appendChild(h('h2', { class:'page-title' }, ['Extras']));
+    content.appendChild(skel(52));
+    return;
+  }
   content.appendChild(h('h2', { class:'page-title' }, ['Extras']));
   var SYS = [
     { key:'xp', label:'⭐ XP-System', hint:'Level & XP für Nachrichten' },
@@ -2432,6 +2453,116 @@ function renderSettings(){
     h('p', { class:'muted sm', style:'margin-bottom:10px' }, ['Bei schwacher Hardware: sparsamer Modus — gleiche Funktionen, ohne Raster und Schatten. Gilt für dieses Gerät.']),
     fxRow
   ]));
+  if (hasRole('co_owner')) {
+    var wlBox = h('div', { class:'card', style:'margin-top:12px' }, [
+      h('h3', {}, ['Admin-Whitelist']),
+      h('p', { class:'muted sm', style:'margin-bottom:10px' }, ['Community-Owner und Bot-Owner können hier Moderationsberechtigungen pflegen.']),
+      skel(48), skel(48)
+    ]);
+    content.appendChild(wlBox);
+    var wlUser = h('input', { type:'text', placeholder:'Nummer oder JID' });
+    var wlReason = h('input', { type:'text', placeholder:'Grund (optional)' });
+    var wlAdd = h('button', { class:'small', onclick:function(){
+      api('/admin/whitelist/add', { method:'POST', body:{ user: wlUser.value, reason: wlReason.value } })
+        .then(function(){ toast('✅ Whitelist aktualisiert'); render(); })
+        .catch(function(e){ toast('⚠️ ' + e.message); });
+    } }, ['Hinzufügen']);
+    api('/admin/whitelist').then(function(res){
+      wlBox.replaceChildren(
+        h('h3', {}, ['Admin-Whitelist']),
+        h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
+        field('Nummer oder JID', wlUser),
+        field('Grund', wlReason),
+        wlAdd
+      ])
+      );
+      if (!res.whitelist.length) {
+        wlBox.appendChild(h('p', { class:'muted sm' }, ['Noch niemand freigeschaltet.']));
+        return;
+      }
+      wlBox.appendChild(dataTable(['Nutzer', 'Hinzugefügt von', 'Hinzugefügt', 'Grund'], res.whitelist, function(r){
+        return [
+          userLabel(r.user, r.user_jid),
+          r.addedByLabel || userLabel(r.addedByUser, r.added_by),
+          r.added_at ? new Date(Number(r.added_at)).toLocaleString('de-DE') : '—',
+          r.reason || '—'
+        ];
+      }, function(r){
+        return h('button', { class:'small ghost', 'aria-label':'Whitelist-Eintrag für ' + userLabel(r.user, r.user_jid) + ' entfernen', onclick:function(){
+          api('/admin/whitelist/remove', { method:'POST', body:{ user: r.user_jid } })
+            .then(function(){ toast('✅ Entfernt'); render(); })
+            .catch(function(e){ toast('⚠️ ' + e.message); });
+        } }, ['Entfernen']);
+      }));
+    }).catch(function(e){
+      wlBox.replaceChildren(
+        h('h3', {}, ['Admin-Whitelist']),
+        h('p', { class:'muted sm' }, [e.message])
+      );
+    });
+  }
+  if (hasRole('owner')) {
+    var accBox = h('div', { class:'card', style:'margin-top:12px' }, [
+      h('h3', {}, ['Dashboard-Zugänge']),
+      h('p', { class:'muted sm', style:'margin-bottom:10px' }, ['Owner können hier Logins anlegen, Rollen ändern und Zugänge sperren.']),
+      skel(48), skel(48)
+    ]);
+    content.appendChild(accBox);
+    var accUser = h('input', { type:'text', placeholder:'Benutzername' });
+    var accPass = h('input', { type:'password', placeholder:'Neues Passwort' });
+    var accRole = h('select', {}, [
+      h('option', { value:'viewer' }, ['Viewer']),
+      h('option', { value:'admin' }, ['Admin']),
+      h('option', { value:'co_owner' }, ['Co-Owner']),
+      h('option', { value:'owner' }, ['Owner'])
+    ]);
+    var accCreate = h('button', { class:'small', onclick:function(){
+      api('/admin/accounts', { method:'POST', body:{ username: accUser.value, password: accPass.value, role: accRole.value } })
+        .then(function(){ toast('✅ Zugang erstellt'); render(); })
+        .catch(function(e){ toast('⚠️ ' + e.message); });
+    } }, ['Erstellen']);
+    api('/admin/accounts').then(function(res){
+      accBox.replaceChildren(
+        h('h3', {}, ['Dashboard-Zugänge']),
+        h('div', { class:'row wrap', style:'align-items:flex-end;margin-bottom:var(--s3)' }, [
+        field('Benutzername', accUser),
+        field('Passwort', accPass),
+        field('Rolle', accRole),
+        accCreate
+      ])
+      );
+      if (!res.users.length) {
+        accBox.appendChild(h('p', { class:'muted sm' }, ['Keine Zugänge vorhanden.']));
+        return;
+      }
+      accBox.appendChild(dataTable(['Benutzer', 'Rolle', 'Status'], res.users, function(u){
+        var roleSelect = h('select', { onchange:function(){
+          api('/admin/accounts/' + encodeURIComponent(u.id) + '/role', { method:'POST', body:{ role: roleSelect.value } })
+            .then(function(){ u.role = roleSelect.value; toast('✅ Rolle gespeichert'); })
+            .catch(function(e){ toast('⚠️ ' + e.message); roleSelect.value = u.role; });
+        } }, [
+          h('option', { value:'viewer' }, ['Viewer']),
+          h('option', { value:'admin' }, ['Admin']),
+          h('option', { value:'co_owner' }, ['Co-Owner']),
+          h('option', { value:'owner' }, ['Owner'])
+        ]);
+        roleSelect.value = u.role;
+        if ((currentUser && currentUser.id === u.id) || u.disabled) roleSelect.disabled = true;
+        return [u.username, roleSelect, u.disabled ? 'deaktiviert' : 'aktiv'];
+      }, function(u){
+        return h('button', { class:'small ghost', onclick:function(){
+          api('/admin/accounts/' + encodeURIComponent(u.id) + '/disabled', { method:'POST', body:{ disabled: !u.disabled } })
+            .then(function(){ toast('✅ Status geändert'); render(); })
+            .catch(function(e){ toast('⚠️ ' + e.message); });
+        } }, [u.disabled ? 'Aktivieren' : 'Deaktivieren']);
+      }));
+    }).catch(function(e){
+      accBox.replaceChildren(
+        h('h3', {}, ['Dashboard-Zugänge']),
+        h('p', { class:'muted sm' }, [e.message])
+      );
+    });
+  }
   var wipeSession = h('input', { type:'checkbox' });
   var wipeBtn = h('button', { class:'danger', onclick:function(){
     var typed = prompt('⚠️ Das löscht ALLE Bot-Daten unwiderruflich: XP, Einstellungen, Verwarnungen, Custom-Befehle, Statistiken.\\n\\nZum Bestätigen exakt LÖSCHEN eintippen:');

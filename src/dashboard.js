@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import express from 'express';
 import helmet from 'helmet';
-import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import rateLimit from 'express-rate-limit';
 import { BOT_NAME, config } from './config.js';
 import { state, rolloverDay, requestPairingCode, forceRelink, requestShutdown } from './state.js';
 import { dbRun, dbRows, dayKey, wipeAllData } from './db.js';
@@ -29,6 +29,18 @@ import {
   invalidateGroupCache, cachedGroupCount,
 } from './services/query.js';
 import { createApiV1, API_BASE } from './api/index.js';
+import { requireDashboardAuth, handleDashboardLogin, handleDashboardLogout, extractSessionToken, validateSession, revokeSessionsForUser } from './dashboard-auth.js';
+import { hasRoleLevel } from './api/permissions-rbac.js';
+import { addToAdminWhitelist, removeFromAdminWhitelist, getModerationAudit } from './permissions-new.js';
+import {
+  createApiUser,
+  listApiUsers,
+  changeApiUserRole,
+  disableApiUser,
+  enableApiUser,
+  getApiUserById,
+} from './api/auth.js';
+import { normalizePhoneNumber } from './utils/phone.js';
 
 // ── Statische Assets: Versionierung + Vorab-Kompression ───────────
 
@@ -101,66 +113,50 @@ function asyncSafe(router) {
   return router;
 }
 
-// ── Auth-Grundlagen ────────────────────────────────────────────────
+function requireRole(minRole) {
+  return (req, res, next) => {
+    if (!req.user?.role || !hasRoleLevel(req.user.role, minRole)) {
+      return res.status(403).json({ error: 'Keine Berechtigung.' });
+    }
+    next();
+  };
+}
 
-const sessions = new Map(); // token → Ablauf-Zeitstempel
-const loginFails = new Map(); // ip → { count, lockedUntil }
+function dashboardUser(req) {
+  return {
+    id: req.user?.userId || null,
+    username: req.user?.username || '',
+    role: req.user?.role || '',
+  };
+}
 
-const sha256 = (s) => crypto.createHash('sha256').update(String(s), 'utf8').digest();
+async function requireActiveDashboardUser(req, res) {
+  const userId = req.user?.userId;
+  if (!userId) return false;
+  const liveUser = await getApiUserById(userId);
+  if (!liveUser || Number(liveUser.disabled) === 1) {
+    revokeSessionsForUser(userId);
+    res.setHeader('Set-Cookie', 'sid=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict');
+    res.status(401).json({ error: 'Sitzung abgelaufen.' });
+    return false;
+  }
+  return liveUser;
+}
 
-function passwordOk(candidate) {
-  const secret = (process.env.ACCESS_SECRET || '').trim();
-  if (!secret) return false;
-  return crypto.timingSafeEqual(sha256(candidate), sha256(secret));
+function normalizeDashboardJid(input) {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  if (/^\d{6,20}@(s\.whatsapp\.net|lid)$/i.test(raw)) return raw.toLowerCase();
+  const normalized = normalizePhoneNumber(raw);
+  return normalized ? `${normalized}@s.whatsapp.net` : null;
 }
 
 function clientIp(req) {
-  // req.ip respektiert `trust proxy` (siehe app.set weiter unten): Express
-  // verwirft die vom Client frei setzbaren linken X-Forwarded-For-Eintraege und
-  // nimmt die Adresse, die der vertraute Proxy angehaengt hat.
-  //
-  // Vorher wurde der Header direkt geparst und der LINKESTE Wert genommen. Das
-  // war doppelt angreifbar: ein rotierender Fake-Header liess den
-  // Fehlversuchs-Zaehler nie hochlaufen (Bruteforce ohne Sperre), und ein
-  // konstanter Fake-Header mit der IP des Betreibers sperrte diesen gezielt aus.
-  //
-  // ipKeyGenerator() fasst IPv6 auf das /56-Praefix zusammen. Ohne das bekam
-  // JEDE Adresse eines Praefixes ihren eigenen Fehlversuchs-Zaehler — und ein
-  // einzelnes IPv6-Praefix umfasst mehr Adressen, als man je durchprobieren
-  // muesste. Die Aussperre nach fuenf Fehlversuchen war damit fuer jeden
-  // umgehbar, der IPv6 hat. IPv4 bleibt unveraendert, IPv4-mapped-IPv6
-  // (::ffff:1.2.3.4) wird auf die IPv4-Form normalisiert.
-  return ipKeyGenerator(req.ip || req.socket.remoteAddress || '?');
+  return req.ip || req.socket?.remoteAddress || '?';
 }
 
-function issueSession(res) {
-  const token = crypto.randomBytes(32).toString('hex');
-  sessions.set(token, Date.now() + config.web.sessionTtlMs);
-  if (sessions.size > 200) sessions.delete(sessions.keys().next().value);
-  res.setHeader(
-    'Set-Cookie',
-    `sid=${token}; Max-Age=${Math.floor(config.web.sessionTtlMs / 1000)}; Path=/; HttpOnly; Secure; SameSite=Strict`
-  );
-}
-
-function readSession(req) {
-  const raw = req.headers.cookie || '';
-  const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(raw);
-  if (!m) return false;
-  const expiry = sessions.get(m[1]);
-  if (!expiry || expiry < Date.now()) {
-    sessions.delete(m[1]);
-    return false;
-  }
-  return true;
-}
-
-function requireAuth(req, res, next) {
-  if (readSession(req)) return next();
-  if ((req.originalUrl || req.path).startsWith('/api/')) {
-    return res.status(401).json({ error: 'nicht angemeldet' });
-  }
-  return res.redirect('/login');
+function isWhatsAppActor(value) {
+  return /^[0-9]{5,20}@(s\.whatsapp\.net|c\.us|lid)$/i.test(String(value || ''));
 }
 
 // ── App bauen ──────────────────────────────────────────────────────
@@ -238,52 +234,29 @@ export function createDashboard() {
 
   // ── Login ──
   const loginLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
-
   app.get('/login', (req, res) => {
-    if (readSession(req)) return res.redirect('/');
+    if (validateSession(extractSessionToken(req.headers.cookie))) return res.redirect('/');
     sendAsset(req, res, 'login', 'no-store');
   });
 
-  app.post('/login', loginLimiter, (req, res) => {
-    const ip = clientIp(req);
-    const entry = loginFails.get(ip) || { count: 0, lockedUntil: 0 };
-    if (entry.lockedUntil > Date.now()) {
-      const mins = Math.ceil((entry.lockedUntil - Date.now()) / 60_000);
-      return res.status(429).json({ error: `Zu viele Fehlversuche — gesperrt für ${mins} Min.` });
-    }
-    const pw = String(req.body?.password || '');
-    if (pw && passwordOk(pw)) {
-      loginFails.delete(ip);
-      issueSession(res);
-      return res.json({ ok: true });
-    }
-    entry.count++;
-    if (entry.count >= config.web.loginMaxFails) {
-      entry.count = 0;
-      entry.lockedUntil = Date.now() + config.web.loginLockMinutes * 60_000;
-    }
-    loginFails.set(ip, entry);
-    if (loginFails.size > 500) loginFails.delete(loginFails.keys().next().value);
-    return res.status(401).json({ error: 'Falsches Passwort.' });
-  });
+  app.post('/login', loginLimiter, (req, res) => handleDashboardLogin(req, res));
 
-  app.post('/logout', requireAuth, (req, res) => {
-    const m = /(?:^|;\s*)sid=([a-f0-9]{64})/.exec(req.headers.cookie || '');
-    if (m) sessions.delete(m[1]);
-    res.setHeader('Set-Cookie', 'sid=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Strict');
-    res.json({ ok: true });
-  });
+  app.post('/logout', requireDashboardAuth, (req, res) => handleDashboardLogout(req, res));
 
   // ── Panel-Assets (hinter Login) ──
-  app.get('/', requireAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
-  app.get('/qr', requireAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
+  app.get('/', requireDashboardAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
+  app.get('/qr', requireDashboardAuth, (req, res) => sendAsset(req, res, 'app', 'no-store'));
   app.get('/app.css', (req, res) => sendAsset(req, res, '/app.css', 'public, max-age=31536000, immutable'));
   app.get('/app.js', (req, res) => sendAsset(req, res, '/app.js', 'public, max-age=31536000, immutable'));
   app.get('/theme-init.js', (req, res) => sendAsset(req, res, '/theme-init.js', 'public, max-age=31536000, immutable'));
 
   // ── API ──
   const api = asyncSafe(express.Router());
-  app.use('/api', requireAuth, api);
+  app.use('/api', requireDashboardAuth, api);
+
+  api.get('/me', (req, res) => {
+    res.json({ user: dashboardUser(req) });
+  });
 
   api.get('/status', async (req, res) => {
     rolloverDay();
@@ -331,7 +304,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/pairing-code', async (req, res) => {
+  api.post('/pairing-code', requireRole('admin'), async (req, res) => {
     const phone = String(req.body?.phoneNumber || '').replace(/\D/g, '');
     if (!/^\d{6,15}$/.test(phone)) {
       return res.status(400).json({ error: 'Bitte volle Nummer mit Ländervorwahl angeben (nur Ziffern, z. B. 4915112345678).' });
@@ -345,7 +318,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/relink', async (req, res) => {
+  api.post('/relink', requireRole('co_owner'), async (req, res) => {
     try {
       await forceRelink();
       await audit('relink', '', '', 'panel', '');
@@ -436,7 +409,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/groups/:jid/settings', async (req, res) => {
+  api.post('/groups/:jid/settings', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const { field, value } = req.body || {};
@@ -479,7 +452,7 @@ export function createDashboard() {
     }
   });
 
-  api.post('/groups/:jid/send', async (req, res) => {
+  api.post('/groups/:jid/send', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     const text = String(req.body?.text || '').trim();
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
@@ -491,7 +464,7 @@ export function createDashboard() {
     res.json({ ok: !!result });
   });
 
-  api.post('/groups/:jid/kick', async (req, res) => {
+  api.post('/groups/:jid/kick', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const user = String(req.body?.user || '');
@@ -501,7 +474,7 @@ export function createDashboard() {
     res.json({ ok });
   });
 
-  api.post('/groups/:jid/ban', async (req, res) => {
+  api.post('/groups/:jid/ban', requireRole('admin'), async (req, res) => {
     const jid = req.params.jid;
     if (!jid.endsWith('@g.us')) return res.status(400).json({ error: 'Ungültige Gruppe.' });
     const user = String(req.body?.user || '');
@@ -526,7 +499,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/commands/:name', async (req, res) => {
+  api.post('/commands/:name', requireRole('admin'), async (req, res) => {
     const name = req.params.name;
     if (!registry.some((c) => c.name === name)) return res.status(404).json({ error: 'Unbekannter Befehl.' });
     if (name === 'hilfe') return res.status(400).json({ error: '!hilfe kann nicht deaktiviert werden.' });
@@ -540,7 +513,7 @@ export function createDashboard() {
     maintenance: getGlobalFlag('maintenance'),
   });
   api.get('/global', (req, res) => res.json(globalPayload()));
-  api.post('/global', async (req, res) => {
+  api.post('/global', requireRole('co_owner'), async (req, res) => {
     const key = String(req.body?.key || '');
     if (!GLOBAL_KEYS[key]) return res.status(400).json({ error: 'Unbekanntes System.' });
     const value = !!req.body?.value;
@@ -549,7 +522,7 @@ export function createDashboard() {
     res.json({ ok: true, ...globalPayload() });
   });
 
-  api.post('/custom', async (req, res) => {
+  api.post('/custom', requireRole('admin'), async (req, res) => {
     const { type, name, reply } = req.body || {};
     const key = String(name || '').toLowerCase().trim();
     const text = String(reply || '').trim();
@@ -572,7 +545,7 @@ export function createDashboard() {
     res.json({ ok: true });
   });
 
-  api.delete('/custom/:type/:name', async (req, res) => {
+  api.delete('/custom/:type/:name', requireRole('admin'), async (req, res) => {
     const key = String(req.params.name || '').toLowerCase();
     if (req.params.type === 'faq') await dbRun('DELETE FROM faq WHERE keyword = ?', [key]);
     else await dbRun('DELETE FROM custom_commands WHERE name = ?', [key]);
@@ -582,7 +555,7 @@ export function createDashboard() {
 
   api.get('/moderation', async (req, res) => {
     const now = Date.now();
-    const [warns, mutes, bans, auditRows] = await Promise.all([
+    const [warns, mutes, bans, legacyAuditRows, moderationAuditRows] = await Promise.all([
       dbRows(
         `SELECT id, group_jid, user_jid, reason, created_at, expires_at FROM warnings
          WHERE expires_at > ? ORDER BY created_at DESC LIMIT 50`, [now]
@@ -590,7 +563,22 @@ export function createDashboard() {
       dbRows('SELECT group_jid, user_jid, until, reason FROM mutes WHERE until > ? LIMIT 50', [now]),
       dbRows('SELECT group_jid, user_jid, reason, created_at FROM bans ORDER BY created_at DESC LIMIT 50', []),
       dbRows('SELECT action, group_jid, target, by_jid, detail, created_at FROM audit_log ORDER BY created_at DESC LIMIT 30', []),
+      getModerationAudit({ limitDays: 90, limit: 30 }),
     ]);
+    const auditRows = [
+      ...legacyAuditRows.map((r) => ({ ...r, source: 'audit_log' })),
+      ...moderationAuditRows.map((r) => ({
+        action: r.action,
+        group_jid: r.group_jid || '',
+        target: r.target || '',
+        by_jid: r.actor || '',
+        detail: r.detail || '',
+        created_at: r.created_at,
+        source: 'moderation_audit',
+      })),
+    ]
+      .sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0))
+      .slice(0, 30);
 
     // Anzeigenamen fuer alle beteiligten Personen in EINEM Durchgang. Die
     // rohen user_jid/target/by_jid bleiben erhalten — die Aktionen im Panel
@@ -616,7 +604,7 @@ export function createDashboard() {
     });
   });
 
-  api.post('/moderation/clear', async (req, res) => {
+  api.post('/moderation/clear', requireRole('co_owner'), async (req, res) => {
     const { type, group, user } = req.body || {};
     if (!group || !user) return res.status(400).json({ error: 'Gruppe/Nutzer fehlt.' });
     try {
@@ -628,6 +616,144 @@ export function createDashboard() {
     } catch (err) {
       logError(err, 'panel.modClear');
       res.status(500).json({ error: 'Aufheben fehlgeschlagen.' });
+    }
+  });
+
+  api.get('/admin/whitelist', requireRole('co_owner'), async (_req, res) => {
+    try {
+      const rows = await dbRows(
+        'SELECT user_jid, added_by, added_at, reason FROM admin_whitelist ORDER BY added_at DESC LIMIT 100',
+        []
+      );
+      const ids = await resolveIdentities([
+        ...rows.map((r) => r.user_jid),
+        ...rows.map((r) => r.added_by).filter(isWhatsAppActor),
+      ]);
+      res.json({
+        whitelist: rows.map((r) => ({
+          ...r,
+          user: ids.get(String(r.user_jid)) || null,
+          addedByUser: isWhatsAppActor(r.added_by) ? ids.get(String(r.added_by)) || null : null,
+          addedByLabel: isWhatsAppActor(r.added_by) ? null : String(r.added_by || ''),
+        })),
+      });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelist');
+      res.status(500).json({ error: 'Whitelist konnte nicht geladen werden.' });
+    }
+  });
+
+  api.post('/admin/whitelist/add', requireRole('co_owner'), async (req, res) => {
+    const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
+    const reason = String(req.body?.reason || '').trim().slice(0, 200);
+    if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
+    try {
+      const actor = dashboardUser(req);
+      const actorRef = actor.username ? `dashboard:${actor.username}` : 'dashboard:panel';
+      const added = await addToAdminWhitelist(userJid, actorRef, reason);
+      if (!added) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht gespeichert werden.' });
+      await audit('admin-whitelist-add', '', userJid, actor.username || 'panel', reason);
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelistAdd');
+      res.status(500).json({ error: 'Whitelist konnte nicht aktualisiert werden.' });
+    }
+  });
+
+  api.post('/admin/whitelist/remove', requireRole('co_owner'), async (req, res) => {
+    const userJid = normalizeDashboardJid(req.body?.user || req.body?.userJid);
+    if (!userJid) return res.status(400).json({ error: 'Ungültiger Nutzer.' });
+    try {
+      const actor = dashboardUser(req);
+      const removed = await removeFromAdminWhitelist(userJid);
+      if (!removed) return res.status(400).json({ error: 'Whitelist-Eintrag konnte nicht entfernt werden.' });
+      await audit('admin-whitelist-remove', '', userJid, actor.username || 'panel', '');
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.adminWhitelistRemove');
+      res.status(500).json({ error: 'Whitelist konnte nicht aktualisiert werden.' });
+    }
+  });
+
+  api.get('/admin/accounts', requireRole('owner'), async (_req, res) => {
+    try {
+      const users = await listApiUsers();
+      res.json({
+        users: users.map((u) => ({
+          id: u.id,
+          username: u.username,
+          role: u.role,
+          disabled: Number(u.disabled) === 1,
+          created_at: Number(u.created_at) || 0,
+        })),
+      });
+    } catch (err) {
+      logError(err, 'panel.accounts');
+      res.status(500).json({ error: 'Zugänge konnten nicht geladen werden.' });
+    }
+  });
+
+  api.post('/admin/accounts', requireRole('owner'), async (req, res) => {
+    const username = String(req.body?.username || '').trim();
+    const password = String(req.body?.password || '');
+    const role = String(req.body?.role || '').trim();
+    try {
+      if (!(await requireActiveDashboardUser(req, res))) return;
+      const result = await createApiUser(username, password, role);
+      if (result?.error) return res.status(400).json({ error: result.error });
+      await audit('dashboard-account-create', '', result.id, dashboardUser(req).username || 'panel', role);
+      res.status(201).json({ ok: true, user: result });
+    } catch (err) {
+      logError(err, 'panel.accountCreate');
+      res.status(500).json({ error: 'Zugang konnte nicht erstellt werden.' });
+    }
+  });
+
+  api.post('/admin/accounts/:id/role', requireRole('owner'), async (req, res) => {
+    const userId = String(req.params.id || '');
+    const role = String(req.body?.role || '').trim();
+    if (!userId || !role) return res.status(400).json({ error: 'Nutzer und Rolle fehlen.' });
+    try {
+      const self = dashboardUser(req);
+      if (!(await requireActiveDashboardUser(req, res))) return;
+      if (self.id && self.id === userId && role !== 'owner') {
+        return res.status(400).json({ error: 'Der eigene Owner-Zugang kann nicht herabgestuft werden.' });
+      }
+      const target = await getApiUserById(userId);
+      if (!target) return res.status(404).json({ error: 'Zugang nicht gefunden.' });
+      if (Number(target.disabled) === 1) {
+        return res.status(400).json({ error: 'Deaktivierte Zugänge müssen erst wieder aktiviert werden.' });
+      }
+      const changed = await changeApiUserRole(userId, role);
+      if (!changed) return res.status(400).json({ error: 'Rolle konnte nicht gesetzt werden.' });
+      await audit('dashboard-account-role', '', userId, self.username || 'panel', role);
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.accountRole');
+      res.status(500).json({ error: 'Rolle konnte nicht geändert werden.' });
+    }
+  });
+
+  api.post('/admin/accounts/:id/disabled', requireRole('owner'), async (req, res) => {
+    const userId = String(req.params.id || '');
+    const disabled = !!req.body?.disabled;
+    if (!userId) return res.status(400).json({ error: 'Nutzer fehlt.' });
+    try {
+      const self = dashboardUser(req);
+      if (!(await requireActiveDashboardUser(req, res))) return;
+      if (self.id && self.id === userId && disabled) {
+        return res.status(400).json({ error: 'Der eigene Zugang kann nicht deaktiviert werden.' });
+      }
+      const target = await getApiUserById(userId);
+      if (!target) return res.status(404).json({ error: 'Zugang nicht gefunden.' });
+      const ok = disabled ? await disableApiUser(userId) : await enableApiUser(userId);
+      if (!ok) return res.status(400).json({ error: 'Status konnte nicht geändert werden.' });
+      if (disabled) revokeSessionsForUser(userId);
+      await audit('dashboard-account-disabled', '', userId, self.username || 'panel', disabled ? '1' : '0');
+      res.json({ ok: true });
+    } catch (err) {
+      logError(err, 'panel.accountDisabled');
+      res.status(500).json({ error: 'Status konnte nicht geändert werden.' });
     }
   });
 
@@ -744,7 +870,7 @@ export function createDashboard() {
     }
   });
 
-  api.delete('/agenda/schedule/:id', async (req, res) => {
+  api.delete('/agenda/schedule/:id', requireRole('admin'), async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!id) return res.status(400).json({ error: 'Ungültige Nummer.' });
     await dbRun('DELETE FROM scheduled_messages WHERE id = ? AND done = 0', [id]);
@@ -752,7 +878,7 @@ export function createDashboard() {
   });
 
   let lastPanelRestartAt = 0;
-  api.post('/restart', async (req, res) => {
+  api.post('/restart', requireRole('owner'), async (req, res) => {
     const wait = config.web.restartCooldownMs - (Date.now() - lastPanelRestartAt);
     if (wait > 0) {
       return res.status(429).json({ error: `Cooldown aktiv — noch ${Math.ceil(wait / 1000)} s warten.` });
@@ -775,7 +901,7 @@ export function createDashboard() {
   });
 
   let lastWipeAt = 0;
-  api.post('/db/wipe', async (req, res) => {
+  api.post('/db/wipe', requireRole('owner'), async (req, res) => {
     // Strikt auf den String pruefen, nicht auf String(...). JavaScript wandelt
     // ein einelementiges Array in genau sein Element um: String(['LÖSCHEN'])
     // ist 'LÖSCHEN'. Ein Client, der `confirm` versehentlich als Array oder
@@ -913,4 +1039,3 @@ export function createDashboard() {
 
   return app;
 }
-

@@ -8,7 +8,7 @@ import { dbRows, dbRowsStrict, dbRun, bufferXp, bufferStat, bufferGroupMessage, 
 import { replyTo, sendText, wasSentByBot } from './queue.js';
 import { logError } from './logger.js';
 import {
-  senderCandidates, senderJid, isOwner, isBotOwner, isUserAdmin, getGroupMeta, resolveLid, getRoleLevel,
+  senderCandidates, senderJid, isOwner, isBotOwner, isUserAdmin, getGroupMeta, resolveLid, getRoleLevel, ROLE,
 } from './permissions.js';
 import { xpEnabled, maintenanceOn } from './global.js';
 import { checkAutoMod, getGroupSettings } from './moderation.js';
@@ -471,6 +471,9 @@ async function handleMessage(msg) {
     }
     if (command.ownerOnly && !ctx.isOwner) {
       return ctx.reply('⛔ Diesen Befehl darf nur der Owner nutzen.');
+    }
+    if (command.coOwnerOnly && (await ctx.role()) < ROLE.COMMUNITY_OWNER) {
+      return ctx.reply('⛔ Diesen Befehl dürfen nur Community-Owner oder Bot-Owner nutzen.');
     }
     if (command.adminOnly && !(await ctx.isAdmin())) {
       return ctx.reply('⛔ Dafür brauchst du Admin-Rechte in dieser Gruppe.');

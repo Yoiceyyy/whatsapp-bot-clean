@@ -22,12 +22,25 @@ process.env.OWNER_NUMBERS = '491700000000';
 process.env.DATABASE_URL = 'file:' + join(root, '.test-panel.db');
 process.env.DATABASE_KEY = 'unused';
 
-const { initDb } = await import('../src/db.js');
+const { initDb, dbRun } = await import('../src/db.js');
 const { createDashboard } = await import('../src/dashboard.js');
+const { logModerationAction } = await import('../src/permissions-new.js');
 
 let server;
 let base;
 let cookie;
+
+async function login(body) {
+  const res = await fetch(`${base}/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return {
+    res,
+    cookie: (res.headers.get('set-cookie') || '').split(';')[0],
+  };
+}
 
 before(async () => {
   await initDb();
@@ -35,12 +48,7 @@ before(async () => {
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}`;
 
-  const res = await fetch(`${base}/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
-  });
-  cookie = (res.headers.get('set-cookie') || '').split(';')[0];
+  ({ cookie } = await login({ password: SECRET }));
 });
 
 after(() => server?.close());
@@ -62,7 +70,7 @@ test('ein falsches Passwort kommt nicht durch', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'falsch' }),
+    body: JSON.stringify({ username: 'owner', password: 'falsch' }),
   });
   assert.equal(res.status, 401);
   assert.equal(res.headers.get('set-cookie'), null, 'kein Cookie bei Fehlschlag');
@@ -72,7 +80,7 @@ test('die Anmeldung liefert ein abgesichertes Sitzungs-Cookie', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
+    body: JSON.stringify({ username: 'owner', password: SECRET }),
   });
   assert.equal(res.status, 200);
   const raw = res.headers.get('set-cookie') || '';
@@ -86,7 +94,7 @@ test('nach dem Abmelden ist die Sitzung wirklich ungueltig', async () => {
   const res = await fetch(`${base}/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: SECRET }),
+    body: JSON.stringify({ username: 'owner', password: SECRET }),
   });
   const tmp = (res.headers.get('set-cookie') || '').split(';')[0];
   await fetch(`${base}/logout`, { method: 'POST', headers: { cookie: tmp } });
@@ -97,7 +105,7 @@ test('nach dem Abmelden ist die Sitzung wirklich ungueltig', async () => {
 
 test('alle Leseansichten antworten mit 200', async () => {
   for (const path of [
-    '/api/status', '/api/commands', '/api/global', '/api/moderation',
+    '/api/status', '/api/commands', '/api/global', '/api/moderation', '/api/me',
     '/api/stats', '/api/agenda', '/api/logs', '/api/users?filter=all', '/api/qr',
   ]) {
     const res = await fetch(`${base}${path}`, { headers: auth() });
@@ -171,4 +179,106 @@ test('LIKE-Platzhalter in der Suche sind entschaerft', async () => {
   });
   assert.equal(res.status, 200);
   assert.equal((await res.json()).users.length, 0, '% darf keine Wildcard sein');
+});
+
+test('Admin-Whitelist ist über das Dashboard les- und schreibbar', async () => {
+  let res = await fetch(`${base}/api/admin/whitelist`, { headers: auth() });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await res.json()).whitelist, []);
+
+  res = await post('/api/admin/whitelist/add', { user: '49170123456', reason: 'Test' });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: auth() });
+  const body = await res.json();
+  assert.equal(body.whitelist.length, 1);
+  assert.equal(body.whitelist[0].user_jid, '49170123456@s.whatsapp.net');
+
+  res = await post('/api/admin/whitelist/remove', { user: '49170123456' });
+  assert.equal(res.status, 200);
+});
+
+test('Dashboard kann neue Zugänge anlegen und auflisten', async () => {
+  let res = await post('/api/admin/accounts', {
+    username: 'neueradmin',
+    password: 'ein-sehr-langes-passwort',
+    role: 'co_owner',
+  });
+  assert.equal(res.status, 201);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: auth() });
+  const body = await res.json();
+  const created = body.users.find((u) => u.username === 'neueradmin');
+  assert.ok(created, 'neuer Zugang fehlt in der Liste');
+  assert.equal(created.role, 'co_owner');
+
+  res = await post(`/api/admin/accounts/${created.id}/role`, { role: 'admin' });
+  assert.equal(res.status, 200);
+
+  res = await post(`/api/admin/accounts/${created.id}/disabled`, { disabled: true });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: auth() });
+  const updated = (await res.json()).users.find((u) => u.id === created.id);
+  assert.equal(updated.role, 'admin');
+  assert.equal(updated.disabled, true);
+});
+
+test('Rollen-Gates schützen Whitelist und Accountverwaltung', async () => {
+  let res = await post('/api/admin/accounts', {
+    username: 'vieweruser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'viewer',
+  });
+  assert.equal(res.status, 201);
+
+  res = await post('/api/admin/accounts', {
+    username: 'adminuser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'admin',
+  });
+  assert.equal(res.status, 201);
+
+  res = await post('/api/admin/accounts', {
+    username: 'coowneruser',
+    password: 'ein-sehr-langes-passwort',
+    role: 'co_owner',
+  });
+  assert.equal(res.status, 201);
+
+  const viewerLogin = await login({ username: 'vieweruser', password: 'ein-sehr-langes-passwort' });
+  const adminLogin = await login({ username: 'adminuser', password: 'ein-sehr-langes-passwort' });
+  const coOwnerLogin = await login({ username: 'coowneruser', password: 'ein-sehr-langes-passwort' });
+
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: viewerLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: adminLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/whitelist`, { headers: { cookie: coOwnerLogin.cookie } });
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/admin/accounts`, { headers: { cookie: coOwnerLogin.cookie } });
+  assert.equal(res.status, 403);
+  res = await fetch(`${base}/api/admin/accounts`, { headers: { cookie: adminLogin.cookie } });
+  assert.equal(res.status, 403);
+});
+
+test('Moderationsansicht zeigt auch moderation_audit-Einträge', async () => {
+  await dbRun(
+    'INSERT INTO audit_log (action, group_jid, target, by_jid, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ['kick', '1@g.us', '491700000001@s.whatsapp.net', 'panel', 'legacy', Date.now() - 1000]
+  );
+  await logModerationAction(
+    'admin.whitelist.add',
+    '491700000000@s.whatsapp.net',
+    '491700000002@s.whatsapp.net',
+    null,
+    'modern'
+  );
+
+  const res = await fetch(`${base}/api/moderation`, { headers: auth() });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(body.audit.some((a) => a.detail === 'legacy'));
+  assert.ok(body.audit.some((a) => a.detail === 'modern'));
 });

@@ -10,7 +10,7 @@ process.env.DATABASE_KEY = 'unused';
 
 const { initDb, dbRun } = await import('../src/db.js');
 const { state } = await import('../src/state.js');
-const { invalidateGroupMeta } = await import('../src/permissions.js');
+const { invalidateGroupMeta, getGroupMeta } = await import('../src/permissions.js');
 const { default: adminPromoteCommands } = await import('../src/commands/admin-promote.js');
 
 const TARGET = '49170123456@s.whatsapp.net';
@@ -109,7 +109,7 @@ test('!admin nutzt bei verfügbarem Gruppen-Snapshot keinen Einzelabruf pro Grup
 
   assert.equal(metadataCalls, 0);
   assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
-  assert.match(ctx.replies[0], /Übersprungen: 1/);
+  assert.match(ctx.replies[0], /Übersprungen: 0/);
 });
 
 test('!admin fällt bei Snapshot-Fehler auf Einzelabrufe zurück', async () => {
@@ -275,6 +275,56 @@ test('!unadmin nutzt dieselbe Gruppen-Auswahl und demotet nur bestehende Admins'
   assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'demote' }]);
   assert.match(ctx.replies[0], /degradiert 1/);
   assert.match(ctx.replies[0], /Übersprungen: 1/);
+});
+
+test('!admin unterstützt @-Mentions als Ziel und nutzt alle aktuellen Gruppen', async () => {
+  const updates = [];
+  state.sock = {
+    groupFetchAllParticipating: async () => ({
+      [GROUP_A]: meta(GROUP_A, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }]),
+      [GROUP_B]: meta(GROUP_B, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }]),
+    }),
+    groupParticipantsUpdate: async (groupJid, participants, action) => {
+      updates.push({ groupJid, participants, action });
+    },
+  };
+
+  const ctx = {
+    ...makeCtx([]),
+    targetUser: () => TARGET,
+    argTextWithoutMentions: () => '',
+  };
+  await cmd('admin').run(ctx);
+
+  assert.deepEqual(updates, [
+    { groupJid: GROUP_A, participants: [TARGET], action: 'promote' },
+    { groupJid: GROUP_B, participants: [TARGET], action: 'promote' },
+  ]);
+  assert.match(ctx.replies[0], /allen Gruppen/);
+});
+
+test('!admin invalidiert nach erfolgreichem Promote den Gruppen-Cache', async () => {
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, 'Alpha', 2, 1, Date.now()]);
+  let metadataCalls = 0;
+
+  state.sock = {
+    groupMetadata: async () => {
+      metadataCalls++;
+      return meta(GROUP_A, [{ id: BOT, admin: 'admin' }, { id: TARGET, admin: null }]);
+    },
+    groupParticipantsUpdate: async () => {},
+  };
+
+  await getGroupMeta(GROUP_A, true);
+  const cached = await getGroupMeta(GROUP_A);
+  assert.ok(cached, 'cache should be warm before promote');
+  assert.equal(metadataCalls, 1);
+
+  const ctx = makeCtx(['49170123456', 'Alpha']);
+  await cmd('admin').run(ctx);
+
+  await getGroupMeta(GROUP_A);
+  assert.equal(metadataCalls, 2);
 });
 
 test('Usage dokumentiert beide Modi', () => {

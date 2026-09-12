@@ -86,7 +86,7 @@ export async function getApiUser(username) {
   try {
     const rows = await dbRows(
       'SELECT * FROM api_users WHERE username = ? LIMIT 1',
-      [username]
+      [String(username || '').trim().toLowerCase()]
     );
     return rows[0] || null;
   } catch (err) {
@@ -122,8 +122,9 @@ export async function getApiUserById(userId) {
  * @returns {Promise<{id, username, role}|{error: string}>}
  */
 export async function createApiUser(username, password, role = 'admin') {
+  const normalizedUsername = String(username || '').trim().toLowerCase();
   // Validate inputs
-  if (!username || username.length < 3 || username.length > 32) {
+  if (!normalizedUsername || normalizedUsername.length < 3 || normalizedUsername.length > 32) {
     return { error: 'Username must be 3-32 characters' };
   }
   if (!password || password.length < 8) {
@@ -135,7 +136,7 @@ export async function createApiUser(username, password, role = 'admin') {
 
   try {
     // Check if username already exists
-    const existing = await getApiUser(username);
+    const existing = await getApiUser(normalizedUsername);
     if (existing) {
       return { error: 'Username already exists' };
     }
@@ -150,14 +151,14 @@ export async function createApiUser(username, password, role = 'admin') {
     await dbRun(
       `INSERT INTO api_users (id, username, pw_hash, pw_salt, role, created_at, disabled)
        VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [userId, username, hash, salt, role, Date.now()]
+      [userId, normalizedUsername, hash, salt, role, Date.now()]
     );
 
-    logWarn(`✏️ New API user created: ${username} (${role})`, 'auth');
+    logWarn(`✏️ New API user created: ${normalizedUsername} (${role})`, 'auth');
 
     return {
       id: userId,
-      username,
+     username: normalizedUsername,
       role,
     };
   } catch (err) {
@@ -249,7 +250,7 @@ export async function listApiUsers() {
  * Initializes the auth system with a first owner user.
  * Called during preflight checks if no users exist.
  * @param {string} ownerPassword - From ACCESS_SECRET
- * @returns {Promise<{success: boolean, message: string}>}
+ * @returns {Promise<{success: boolean, message: string, userId?: string, username?: string, role?: string}>}
  */
 export async function initializeAuthSystem(ownerPassword) {
   try {
@@ -266,6 +267,9 @@ export async function initializeAuthSystem(ownerPassword) {
     return {
       success: true,
       message: 'Auth system initialized. First owner user created.',
+      userId: result.id,
+      username: result.username,
+      role: result.role,
     };
   } catch (err) {
     logError(err, 'initializeAuthSystem');

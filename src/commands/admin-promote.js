@@ -3,7 +3,7 @@
 // Funktion: Personen in gespeicherten Gruppen befoerdern/herabstufen
 
 import { dbRows } from '../db.js';
-import { getGroupMeta, botIsAdminInMeta, normalizeId, resolveLid } from '../permissions.js';
+import { getGroupMeta, botIsAdminInMeta, normalizeId, resolveLid, invalidateGroupMeta } from '../permissions.js';
 import { logModerationAction } from '../permissions-new.js';
 import { state } from '../state.js';
 import { normalizePhoneNumber } from '../utils/phone.js';
@@ -52,9 +52,40 @@ function participantActionId(participant) {
   return resolved || null;
 }
 
-async function loadGroups(groupName) {
+function resolveTarget(ctx) {
+  const mentioned = typeof ctx.targetUser === 'function' ? ctx.targetUser() : null;
+  if (mentioned) return mentioned;
+
+  const normalized = normalizePhoneNumber(ctx.args[0] || '');
+  return normalized ? `${normalized}@s.whatsapp.net` : null;
+}
+
+function groupNameFromArgs(ctx, hasExplicitNumber) {
+  if (hasExplicitNumber) return ctx.args.slice(1).join(' ').trim();
+  if (typeof ctx.argTextWithoutMentions === 'function') return ctx.argTextWithoutMentions();
+  return ctx.args.join(' ').trim();
+}
+
+async function loadLiveGroups(sock) {
+  if (typeof sock?.groupFetchAllParticipating !== 'function') return [];
+  const all = await sock.groupFetchAllParticipating();
+  return Object.values(all || {})
+    .map((meta) => ({
+      jid: normalizeId(meta?.id),
+      name: String(meta?.subject || '').trim(),
+    }))
+    .filter((row) => row.jid?.endsWith('@g.us'))
+    .sort((a, b) => (a.name || a.jid).localeCompare(b.name || b.jid, 'de', { sensitivity: 'base' }));
+}
+
+async function loadGroups(sock, groupName) {
   const trimmed = String(groupName || '').trim();
   if (!trimmed) {
+    try {
+      const groups = await loadLiveGroups(sock);
+      if (groups.length) return { scopeLabel: 'allen Gruppen', groups };
+    } catch {}
+
     return {
       scopeLabel: 'allen gespeicherten Gruppen',
       groups: await dbRows(
@@ -63,6 +94,23 @@ async function loadGroups(groupName) {
       ),
     };
   }
+
+  try {
+    const liveGroups = await loadLiveGroups(sock);
+    const matches = liveGroups.filter((row) =>
+      row.jid === normalizeId(trimmed)
+      || String(row.name || '').localeCompare(trimmed, 'de', { sensitivity: 'base' }) === 0
+    );
+    if (matches.length === 1) {
+      return {
+        scopeLabel: `der Gruppe *${matches[0].name || matches[0].jid}*`,
+        groups: matches,
+      };
+    }
+    if (matches.length > 1) {
+      return { error: `⚠️ Mehrere aktuelle Gruppen heißen "${trimmed}" — bitte Namen im Panel eindeutiger machen.` };
+    }
+  } catch {}
 
   const directJid = await dbRows(
     'SELECT jid, name FROM groups WHERE jid = ? LIMIT 2',
@@ -123,22 +171,20 @@ async function loadGroupMetaMap(sock, groups) {
 }
 
 async function runGroupAdminChange(ctx, { action, commandName, actionLabel, auditAction }) {
-  const num = ctx.args[0];
-  if (!num) return ctx.reply(usage(commandName));
-
-  const normalized = normalizePhoneNumber(num);
-  if (!normalized) return ctx.reply('❌ Ungültige Telefonnummer');
-
   const sock = state.sock;
   if (!sock?.groupParticipantsUpdate) {
     return ctx.reply('⚠️ Bot ist gerade nicht bereit.');
   }
 
-  const targetJid = `${normalized}@s.whatsapp.net`;
-  const groupName = ctx.args.slice(1).join(' ').trim();
+  const hasExplicitNumber = !!normalizePhoneNumber(ctx.args[0] || '');
+  const targetJid = resolveTarget(ctx);
+  if (!targetJid) return ctx.reply(usage(commandName));
+
+  const num = String(targetJid).split('@')[0];
+  const groupName = groupNameFromArgs(ctx, hasExplicitNumber);
 
   try {
-    const selection = await loadGroups(groupName);
+    const selection = await loadGroups(sock, groupName);
     if (selection.error) return ctx.reply(selection.error);
     if (!selection.groups?.length) return ctx.reply('⚠️ Keine Gruppen gefunden');
     const metaByGroup = await loadGroupMetaMap(sock, selection.groups);
@@ -179,6 +225,7 @@ async function runGroupAdminChange(ctx, { action, commandName, actionLabel, audi
         }
 
         await sock.groupParticipantsUpdate(row.jid, [actionId], action);
+        invalidateGroupMeta(row.jid);
         changed++;
       } catch (err) {
         console.error(`Error during ${action} in group ${row.jid}:`, err);
