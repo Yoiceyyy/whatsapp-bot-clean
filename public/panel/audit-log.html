@@ -1,0 +1,178 @@
+<!-- public/panel/audit-log.html -->
+<!-- Moderation Audit Log Viewer -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>📋 Audit-Log</h3>
+    <p class="subtitle">Alle Admin-Aktionen protokolliert</p>
+  </div>
+
+  <div class="card-content">
+    <!-- Filter Form -->
+    <div class="form-section">
+      <h4>Filtern</h4>
+      <form id="auditFilterForm" class="form-inline">
+        <input
+          type="text"
+          id="filterActor"
+          placeholder="Actor (optional)"
+          class="form-input"
+        />
+        <input
+          type="text"
+          id="filterTarget"
+          placeholder="Target (optional)"
+          class="form-input"
+        />
+        <input
+          type="text"
+          id="filterAction"
+          placeholder="Aktion (optional)"
+          class="form-input"
+        />
+        <input
+          type="number"
+          id="filterDays"
+          placeholder="Tage (1-365)"
+          min="1"
+          max="365"
+          value="30"
+          class="form-input"
+          style="width: 120px"
+        />
+        <button type="submit" class="btn btn-primary">Filtern</button>
+      </form>
+    </div>
+
+    <!-- Audit Table -->
+    <div class="table-section">
+      <h4>Audit-Einträge</h4>
+      <div id="auditContainer" class="table-container">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Zeitstempel</th>
+              <th>Aktion</th>
+              <th>Actor</th>
+              <th>Target</th>
+              <th>Gruppe</th>
+              <th>Detail</th>
+            </tr>
+          </thead>
+          <tbody id="auditTable">
+            <tr class="loading">
+              <td colspan="6">Lädt...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .action-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .action-badge.kick {
+    background-color: #dc3545;
+    color: white;
+  }
+
+  .action-badge.ban {
+    background-color: #721c24;
+    color: white;
+  }
+
+  .action-badge.warn {
+    background-color: #ff9800;
+    color: white;
+  }
+
+  .action-badge.promote {
+    background-color: #28a745;
+    color: white;
+  }
+
+  .action-badge.demote {
+    background-color: #6c757d;
+    color: white;
+  }
+
+  .action-badge.whitelist {
+    background-color: #007bff;
+    color: white;
+  }
+
+  .action-badge.suspend {
+    background-color: #e83e8c;
+    color: white;
+  }
+</style>
+
+<script>
+  async function loadAuditLog() {
+    const actor = document.getElementById('filterActor').value;
+    const target = document.getElementById('filterTarget').value;
+    const action = document.getElementById('filterAction').value;
+    const limitDays = document.getElementById('filterDays').value || 30;
+
+    const params = new URLSearchParams();
+    if (actor) params.append('actor', actor);
+    if (target) params.append('target', target);
+    if (action) params.append('action', action);
+    params.append('limitDays', limitDays);
+
+    try {
+      const res = await fetch(`/api/admin/audit?${params}`);
+      if (!res.ok) throw new Error('Failed to load audit log');
+      const data = await res.json();
+
+      const tbody = document.getElementById('auditTable');
+      tbody.innerHTML = '';
+
+      if (!data.audit || data.audit.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center">Keine Einträge</td></tr>';
+        return;
+      }
+
+      data.audit.forEach((entry) => {
+        const timestamp = new Date(entry.created_at).toLocaleString('de-DE');
+        const actorPhone = entry.actorUser?.name || entry.actor?.split('@')[0] || entry.actor;
+        const targetPhone = entry.targetUser?.name || entry.target?.split('@')[0] || entry.target || '-';
+        const groupName = entry.group_jid?.split('@')[0] || '-';
+
+        let actionBadge = `<span class="action-badge ${entry.action}">${entry.action}</span>`;
+
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${timestamp}</td>
+          <td>${actionBadge}</td>
+          <td>${actorPhone}</td>
+          <td>${targetPhone}</td>
+          <td>${groupName}</td>
+          <td><small>${entry.detail || '-'}</small></td>
+        `;
+        tbody.appendChild(row);
+      });
+    } catch (err) {
+      console.error('Error loading audit log:', err);
+      const tbody = document.getElementById('auditTable');
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center error">Fehler beim Laden</td></tr>';
+    }
+  }
+
+  document.getElementById('auditFilterForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    loadAuditLog();
+  });
+
+  // Load on page load
+  loadAuditLog();
+  setInterval(loadAuditLog, 30000); // Refresh every 30s
+</script>

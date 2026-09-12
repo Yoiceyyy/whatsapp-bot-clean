@@ -1,0 +1,202 @@
+<!-- public/panel/admin-suspensions.html -->
+<!-- Admin Suspensions Management Panel -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>🔒 Admin-Suspensionen</h3>
+    <p class="subtitle">Admins temporär sperren</p>
+  </div>
+
+  <div class="card-content">
+    <!-- Suspend Admin Form -->
+    <div class="form-section">
+      <h4>Admin suspendieren</h4>
+      <form id="suspendForm" class="form-inline">
+        <input
+          type="text"
+          id="suspendPhoneInput"
+          placeholder="Telefonnummer (z.B. 49170123456)"
+          class="form-input"
+          required
+        />
+        <input
+          type="number"
+          id="suspendDurationInput"
+          placeholder="Minuten (1-10080)"
+          min="1"
+          max="10080"
+          class="form-input"
+          style="width: 150px"
+          required
+        />
+        <input
+          type="text"
+          id="suspendReasonInput"
+          placeholder="Grund (optional)"
+          class="form-input"
+        />
+        <button type="submit" class="btn btn-primary">Suspendieren</button>
+      </form>
+      <div id="suspendStatus" class="status-message hidden"></div>
+    </div>
+
+    <!-- Active Suspensions Table -->
+    <div class="table-section">
+      <h4>Aktive Suspensionen</h4>
+      <div id="suspensionsContainer" class="table-container">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Telefonnummer</th>
+              <th>Suspendiert von</th>
+              <th>Bis (UTC)</th>
+              <th>Verbleibend</th>
+              <th>Grund</th>
+              <th>Aktionen</th>
+            </tr>
+          </thead>
+          <tbody id="suspensionsTable">
+            <tr class="loading">
+              <td colspan="6">Lädt...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .time-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .time-badge.expiring-soon {
+    background-color: #fff3cd;
+    color: #856404;
+  }
+
+  .time-badge.expired {
+    background-color: #e2e3e5;
+    color: #383d41;
+  }
+</style>
+
+<script>
+  async function loadSuspensions() {
+    try {
+      const res = await fetch('/api/admin/suspensions');
+      if (!res.ok) throw new Error('Failed to load suspensions');
+      const data = await res.json();
+
+      const tbody = document.getElementById('suspensionsTable');
+      tbody.innerHTML = '';
+
+      if (!data.suspensions || data.suspensions.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center">Keine aktiven Suspensionen</td></tr>';
+        return;
+      }
+
+      data.suspensions.forEach((susp) => {
+        const phone = susp.user_jid.split('@')[0];
+        const untilDate = new Date(susp.until);
+        const now = Date.now();
+        const diff = susp.until - now;
+        const hours = Math.floor(diff / (1000 * 60 * 60));
+        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const remaining = `${hours}h ${mins}m`;
+
+        let badgeClass = 'time-badge';
+        if (diff < 0) badgeClass += ' expired';
+        else if (diff < 60 * 60 * 1000) badgeClass += ' expiring-soon'; // < 1 hour
+
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${phone}</td>
+          <td>${susp.suspended_by.split('@')[0]}</td>
+          <td>${untilDate.toLocaleString('de-DE')}</td>
+          <td><span class="${badgeClass}">${remaining}</span></td>
+          <td>${susp.reason || '-'}</td>
+          <td>
+            <button class="btn btn-small btn-success" onclick="revokeSuspension('${susp.user_jid}')">Aufheben</button>
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+    } catch (err) {
+      console.error('Error loading suspensions:', err);
+      const tbody = document.getElementById('suspensionsTable');
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center error">Fehler beim Laden</td></tr>';
+    }
+  }
+
+  async function revokeSuspension(userJid) {
+    if (!confirm('Suspendierung aufheben?')) return;
+
+    try {
+      const res = await fetch('/api/admin/suspensions/revoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userJid }),
+      });
+
+      if (!res.ok) throw new Error('Failed to revoke');
+      showSuspendStatus('success', '✅ Aufgehoben');
+      loadSuspensions();
+    } catch (err) {
+      showSuspendStatus('error', `❌ ${err.message}`);
+    }
+  }
+
+  function showSuspendStatus(type, message) {
+    const el = document.getElementById('suspendStatus');
+    el.textContent = message;
+    el.className = `status-message ${type}`;
+    setTimeout(() => {
+      el.className = 'status-message hidden';
+    }, 3000);
+  }
+
+  document.getElementById('suspendForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const phone = document.getElementById('suspendPhoneInput').value;
+    const duration = parseInt(document.getElementById('suspendDurationInput').value, 10);
+    const reason = document.getElementById('suspendReasonInput').value;
+
+    if (!phone || !duration || duration <= 0 || duration > 10080) {
+      showSuspendStatus('error', '❌ Ungültige Eingabe');
+      return;
+    }
+
+    const userJid = `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
+
+    try {
+      const res = await fetch('/api/admin/suspensions/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userJid,
+          durationMinutes: duration,
+          reason,
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to suspend');
+
+      showSuspendStatus('success', `✅ Für ${duration} Minuten suspendiert`);
+      document.getElementById('suspendForm').reset();
+      loadSuspensions();
+    } catch (err) {
+      showSuspendStatus('error', `❌ ${err.message}`);
+    }
+  });
+
+  // Load on page load
+  loadSuspensions();
+  setInterval(loadSuspensions, 10000); // Refresh every 10s
+</script>

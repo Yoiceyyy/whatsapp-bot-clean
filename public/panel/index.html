@@ -1,0 +1,618 @@
+<!-- public/panel/index.html -->
+<!-- Main Admin Panel -->
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Panel - WhatsApp Bot</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background-color: #f5f5f5;
+      color: #333;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+
+    .header {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      margin-bottom: 5px;
+    }
+
+    .header .user-info {
+      text-align: right;
+    }
+
+    .header .user-info p {
+      font-size: 14px;
+      color: #666;
+    }
+
+    .header .role-badge {
+      display: inline-block;
+      padding: 6px 12px;
+      background-color: #007bff;
+      color: white;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 5px;
+    }
+
+    .role-badge.owner {
+      background-color: #dc3545;
+    }
+
+    .role-badge.co_owner {
+      background-color: #e83e8c;
+    }
+
+    .role-badge.admin {
+      background-color: #007bff;
+    }
+
+    .role-badge.viewer {
+      background-color: #6c757d;
+    }
+
+    .logout-btn {
+      padding: 8px 16px;
+      background-color: #dc3545;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .logout-btn:hover {
+      background-color: #c82333;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+      border-bottom: 2px solid #ddd;
+      background: white;
+      padding: 0 20px;
+      border-radius: 8px 8px 0 0;
+    }
+
+    .nav-tabs button {
+      padding: 15px 20px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      color: #666;
+      border-bottom: 3px solid transparent;
+      transition: all 0.3s;
+    }
+
+    .nav-tabs button:hover {
+      color: #007bff;
+    }
+
+    .nav-tabs button.active {
+      color: #007bff;
+      border-bottom-color: #007bff;
+    }
+
+    .nav-tabs button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .card {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      display: none;
+    }
+
+    .card.active {
+      display: block;
+    }
+
+    .card-header {
+      padding: 20px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .card-header h3 {
+      font-size: 20px;
+      margin-bottom: 5px;
+    }
+
+    .card-header .subtitle {
+      font-size: 14px;
+      color: #666;
+      margin: 0;
+    }
+
+    .card-content {
+      padding: 20px;
+    }
+
+    .form-section {
+      margin-bottom: 30px;
+    }
+
+    .form-section h4 {
+      font-size: 16px;
+      margin-bottom: 15px;
+      color: #333;
+    }
+
+    .form-inline {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+
+    .form-input {
+      flex: 1;
+      min-width: 200px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    .form-input:focus {
+      outline: none;
+      border-color: #007bff;
+      box-shadow: 0 0 5px rgba(0, 123, 255, 0.2);
+    }
+
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.3s;
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-primary {
+      background-color: #007bff;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background-color: #0056b3;
+    }
+
+    .btn-success {
+      background-color: #28a745;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background-color: #218838;
+    }
+
+    .btn-danger {
+      background-color: #dc3545;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background-color: #c82333;
+    }
+
+    .btn-small {
+      padding: 6px 12px;
+      font-size: 12px;
+      margin-right: 5px;
+    }
+
+    .table-container {
+      overflow-x: auto;
+    }
+
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .table th,
+    .table td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #eee;
+    }
+
+    .table th {
+      background-color: #f5f5f5;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .table tbody tr:hover {
+      background-color: #f9f9f9;
+    }
+
+    .status-message {
+      padding: 12px;
+      margin-top: 10px;
+      border-radius: 4px;
+      display: none;
+      font-size: 14px;
+      animation: slideIn 0.3s ease-in-out;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .status-message.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+      display: block;
+    }
+
+    .status-message.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+      display: block;
+    }
+
+    .status-message.hidden {
+      display: none;
+    }
+
+    .loading {
+      text-align: center;
+      color: #999;
+    }
+
+    .text-center {
+      text-align: center;
+    }
+
+    .time-badge,
+    .action-badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 3px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .time-badge.expiring-soon {
+      background-color: #fff3cd;
+      color: #856404;
+    }
+
+    .time-badge.expired {
+      background-color: #e2e3e5;
+      color: #383d41;
+    }
+
+    .action-badge.kick {
+      background-color: #dc3545;
+      color: white;
+    }
+
+    .action-badge.ban {
+      background-color: #721c24;
+      color: white;
+    }
+
+    .action-badge.warn {
+      background-color: #ff9800;
+      color: white;
+    }
+
+    .action-badge.promote {
+      background-color: #28a745;
+      color: white;
+    }
+
+    .action-badge.demote {
+      background-color: #6c757d;
+      color: white;
+    }
+
+    .action-badge.whitelist {
+      background-color: #007bff;
+      color: white;
+    }
+
+    .action-badge.suspend {
+      background-color: #e83e8c;
+      color: white;
+    }
+
+    .alert {
+      padding: 12px;
+      border-radius: 4px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+
+    .alert-info {
+      background-color: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+
+    .alert-warning {
+      background-color: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeeba;
+    }
+
+    .permission-locked {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    .permission-locked::after {
+      content: '🔒 Keine Berechtigung';
+      display: block;
+      font-size: 12px;
+      color: #dc3545;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div>
+        <h1>🤖 Admin Panel</h1>
+        <p>WhatsApp Bot Management</p>
+      </div>
+      <div class="user-info">
+        <p id="userDisplay">Lädt...</p>
+        <span id="roleDisplay" class="role-badge"></span>
+        <button class="logout-btn" onclick="logout()">Logout</button>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="nav-tabs">
+      <button class="tab-btn active" onclick="switchTab('overview')">📊 Übersicht</button>
+      <button class="tab-btn" id="tab-whitelist" onclick="switchTab('whitelist')">🔐 Admin-Whitelist</button>
+      <button class="tab-btn" id="tab-suspensions" onclick="switchTab('suspensions')">🔒 Suspensionen</button>
+      <button class="tab-btn" id="tab-audit" onclick="switchTab('audit')">📋 Audit-Log</button>
+      <button class="tab-btn" id="tab-users" onclick="switchTab('users')">👥 Benutzer</button>
+    </div>
+
+    <!-- Overview Tab -->
+    <div id="overview" class="card active">
+      <div class="card-header">
+        <h3>📊 Übersicht</h3>
+        <p class="subtitle">System Status und Statistiken</p>
+      </div>
+      <div class="card-content">
+        <div class="alert alert-info">
+          ℹ️ Role-Based Permissions System v1.0
+        </div>
+        <div id="statsContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+          <div style="padding: 20px; background: #f5f5f5; border-radius: 4px;">
+            <h4 style="margin-bottom: 10px;">👤 Gebundene Admins</h4>
+            <p id="stat-whitelist" style="font-size: 24px; font-weight: bold;">-</p>
+          </div>
+          <div style="padding: 20px; background: #f5f5f5; border-radius: 4px;">
+            <h4 style="margin-bottom: 10px;">🔒 Suspendiert</h4>
+            <p id="stat-suspensions" style="font-size: 24px; font-weight: bold;">-</p>
+          </div>
+          <div style="padding: 20px; background: #f5f5f5; border-radius: 4px;">
+            <h4 style="margin-bottom: 10px;">📝 Audit-Einträge</h4>
+            <p id="stat-audit" style="font-size: 24px; font-weight: bold;">-</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Whitelist Tab (loaded dynamically) -->
+    <div id="whitelist" class="card"></div>
+
+    <!-- Suspensions Tab (loaded dynamically) -->
+    <div id="suspensions" class="card"></div>
+
+    <!-- Audit Log Tab (loaded dynamically) -->
+    <div id="audit" class="card"></div>
+
+    <!-- Users Tab (loaded dynamically) -->
+    <div id="users" class="card"></div>
+  </div>
+
+  <script>
+    let currentUser = null;
+
+    // Check authentication on load
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/status');
+        if (!res.ok) {
+          window.location.href = '/login';
+          return;
+        }
+        const data = await res.json();
+        currentUser = data.user;
+        displayUser();
+        checkPermissions();
+        loadStats();
+      } catch (err) {
+        console.error('Auth check failed:', err);
+        window.location.href = '/login';
+      }
+    }
+
+    function displayUser() {
+      const userEl = document.getElementById('userDisplay');
+      const roleEl = document.getElementById('roleDisplay');
+      if (currentUser) {
+        userEl.textContent = `👤 ${currentUser.username}`;
+        roleEl.textContent = getRoleLabel(currentUser.role);
+        roleEl.className = `role-badge ${currentUser.role}`;
+      }
+    }
+
+    function getRoleLabel(role) {
+      const labels = {
+        owner: '👑 Owner',
+        co_owner: '🌐 Co-Owner',
+        admin: '🔵 Admin',
+        viewer: '👁️ Viewer',
+      };
+      return labels[role] || role;
+    }
+
+    function checkPermissions() {
+      const role = currentUser?.role;
+      const tabs = {
+        'tab-whitelist': ['co_owner', 'owner'],
+        'tab-suspensions': ['co_owner', 'owner'],
+        'tab-audit': ['admin', 'co_owner', 'owner'],
+        'tab-users': ['owner'],
+      };
+
+      for (const [tabId, requiredRoles] of Object.entries(tabs)) {
+        const tab = document.getElementById(tabId);
+        if (tab) {
+          if (!requiredRoles.includes(role)) {
+            tab.disabled = true;
+            tab.style.opacity = '0.5';
+            tab.onclick = (e) => {
+              e.preventDefault();
+              alert('🔒 Du hast keine Berechtigung für diesen Bereich');
+            };
+          }
+        }
+      }
+    }
+
+    async function loadStats() {
+      try {
+        // Try to load stats from API endpoints
+        const [whitelistRes, suspensionsRes, auditRes] = await Promise.all([
+          fetch('/api/admin/whitelist').catch(() => null),
+          fetch('/api/admin/suspensions').catch(() => null),
+          fetch('/api/admin/audit').catch(() => null),
+        ]);
+
+        if (whitelistRes?.ok) {
+          const data = await whitelistRes.json();
+          document.getElementById('stat-whitelist').textContent = data.whitelist?.length || 0;
+        }
+
+        if (suspensionsRes?.ok) {
+          const data = await suspensionsRes.json();
+          document.getElementById('stat-suspensions').textContent = data.suspensions?.length || 0;
+        }
+
+        if (auditRes?.ok) {
+          const data = await auditRes.json();
+          document.getElementById('stat-audit').textContent = data.audit?.length || 0;
+        }
+      } catch (err) {
+        console.error('Failed to load stats:', err);
+      }
+    }
+
+    function switchTab(tabName) {
+      // Hide all cards
+      document.querySelectorAll('.card').forEach((card) => card.classList.remove('active'));
+
+      // Show selected card
+      const selectedCard = document.getElementById(tabName);
+      if (selectedCard) {
+        selectedCard.classList.add('active');
+      }
+
+      // Update active button
+      document.querySelectorAll('.tab-btn').forEach((btn) => btn.classList.remove('active'));
+      event.target.classList.add('active');
+
+      // Load content if empty
+      if (selectedCard && !selectedCard.innerHTML && tabName !== 'overview') {
+        loadTabContent(tabName);
+      }
+    }
+
+    async function loadTabContent(tabName) {
+      const card = document.getElementById(tabName);
+      const files = {
+        whitelist: '/panel/admin-whitelist.html',
+        suspensions: '/panel/admin-suspensions.html',
+        audit: '/panel/audit-log.html',
+        users: '/panel/admin-users.html',
+      };
+
+      try {
+        const res = await fetch(files[tabName]);
+        if (res.ok) {
+          const html = await res.text();
+          card.innerHTML = html;
+        }
+      } catch (err) {
+        console.error(`Failed to load ${tabName}:`, err);
+        card.innerHTML = '<div class="alert alert-error">❌ Fehler beim Laden</div>';
+      }
+    }
+
+    async function logout() {
+      try {
+        await fetch('/logout', { method: 'POST' });
+        window.location.href = '/login';
+      } catch (err) {
+        console.error('Logout failed:', err);
+      }
+    }
+
+    // Initialize on page load
+    window.addEventListener('DOMContentLoaded', checkAuth);
+  </script>
+</body>
+</html>

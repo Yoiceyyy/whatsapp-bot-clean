@@ -1,0 +1,253 @@
+<!-- public/panel/admin-users.html -->
+<!-- API User Management Panel -->
+
+<div class="card">
+  <div class="card-header">
+    <h3>👥 API-Benutzer</h3>
+    <p class="subtitle">Dashboard-Authentifizierung und Rollen verwalten</p>
+  </div>
+
+  <div class="card-content">
+    <!-- Create User Form -->
+    <div class="form-section">
+      <h4>Neuen Benutzer erstellen</h4>
+      <form id="createUserForm" class="form-inline">
+        <input
+          type="text"
+          id="userUsername"
+          placeholder="Benutzername (min. 3 Zeichen)"
+          class="form-input"
+          required
+        />
+        <input
+          type="password"
+          id="userPassword"
+          placeholder="Passwort (min. 8 Zeichen)"
+          class="form-input"
+          required
+        />
+        <select id="userRole" class="form-input" required>
+          <option value="">-- Rolle wählen --</option>
+          <option value="viewer">👁️ Viewer</option>
+          <option value="admin">🔵 Admin</option>
+          <option value="co_owner">🌐 Co-Owner</option>
+          <option value="owner">👑 Owner</option>
+        </select>
+        <button type="submit" class="btn btn-primary">Erstellen</button>
+      </form>
+      <div id="createUserStatus" class="status-message hidden"></div>
+    </div>
+
+    <!-- Users Table -->
+    <div class="table-section">
+      <h4>Alle Benutzer</h4>
+      <div id="usersContainer" class="table-container">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Benutzername</th>
+              <th>Rolle</th>
+              <th>Erstellt am</th>
+              <th>Status</th>
+              <th>Aktionen</th>
+            </tr>
+          </thead>
+          <tbody id="usersTable">
+            <tr class="loading">
+              <td colspan="5">Lädt...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .status-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .status-badge.enabled {
+    background-color: #d4edda;
+    color: #155724;
+  }
+
+  .status-badge.disabled {
+    background-color: #f8d7da;
+    color: #721c24;
+  }
+
+  .role-select {
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+  }
+</style>
+
+<script>
+  const roleOrder = { owner: 0, co_owner: 1, admin: 2, viewer: 3 };
+
+  async function loadUsers() {
+    try {
+      const res = await fetch('/api/users/list');
+      if (!res.ok) throw new Error('Failed to load users');
+      const data = await res.json();
+
+      const tbody = document.getElementById('usersTable');
+      tbody.innerHTML = '';
+
+      if (!data.users || data.users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center">Keine Benutzer</td></tr>';
+        return;
+      }
+
+      // Sort by role
+      const sorted = [...data.users].sort((a, b) => roleOrder[a.role] - roleOrder[b.role]);
+
+      sorted.forEach((user) => {
+        const date = new Date(user.created_at).toLocaleString('de-DE');
+        const statusBadge = user.disabled
+          ? '<span class="status-badge disabled">🔒 Gesperrt</span>'
+          : '<span class="status-badge enabled">✅ Aktiv</span>';
+
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td><strong>${user.username}</strong></td>
+          <td>${getRoleLabel(user.role)}</td>
+          <td>${date}</td>
+          <td>${statusBadge}</td>
+          <td>
+            <select class="role-select" onchange="changeRole('${user.id}', this.value)">
+              <option value="">Rolle ändern...</option>
+              <option value="viewer" ${user.role === 'viewer' ? 'selected' : ''}>👁️ Viewer</option>
+              <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>🔵 Admin</option>
+              <option value="co_owner" ${user.role === 'co_owner' ? 'selected' : ''}>🌐 Co-Owner</option>
+              <option value="owner" ${user.role === 'owner' ? 'selected' : ''}>👑 Owner</option>
+            </select>
+            ${user.disabled
+              ? `<button class="btn btn-small btn-success" onclick="enableUser('${user.id}')">Aktivieren</button>`
+              : `<button class="btn btn-small btn-danger" onclick="disableUser('${user.id}')">Sperren</button>`}
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+    } catch (err) {
+      console.error('Error loading users:', err);
+      const tbody = document.getElementById('usersTable');
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center error">Fehler beim Laden</td></tr>';
+    }
+  }
+
+  function getRoleLabel(role) {
+    const labels = {
+      owner: '👑 Owner',
+      co_owner: '🌐 Co-Owner',
+      admin: '🔵 Admin',
+      viewer: '👁️ Viewer',
+    };
+    return labels[role] || role;
+  }
+
+  async function changeRole(userId, newRole) {
+    if (!newRole) return;
+
+    try {
+      const res = await fetch(`/api/users/${userId}/role`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: newRole }),
+      });
+
+      if (!res.ok) throw new Error('Failed to change role');
+      showUserStatus('success', '✅ Rolle geändert');
+      loadUsers();
+    } catch (err) {
+      showUserStatus('error', `❌ ${err.message}`);
+    }
+  }
+
+  async function enableUser(userId) {
+    try {
+      const res = await fetch(`/api/users/${userId}/enable`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to enable');
+      showUserStatus('success', '✅ Benutzer aktiviert');
+      loadUsers();
+    } catch (err) {
+      showUserStatus('error', `❌ ${err.message}`);
+    }
+  }
+
+  async function disableUser(userId) {
+    if (!confirm('Benutzer wirklich sperren?')) return;
+
+    try {
+      const res = await fetch(`/api/users/${userId}/disable`, { method: 'POST' });
+      if (!res.ok) throw new Error('Failed to disable');
+      showUserStatus('success', '✅ Benutzer gesperrt');
+      loadUsers();
+    } catch (err) {
+      showUserStatus('error', `❌ ${err.message}`);
+    }
+  }
+
+  function showUserStatus(type, message) {
+    const el = document.getElementById('createUserStatus');
+    el.textContent = message;
+    el.className = `status-message ${type}`;
+    setTimeout(() => {
+      el.className = 'status-message hidden';
+    }, 3000);
+  }
+
+  document.getElementById('createUserForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const username = document.getElementById('userUsername').value;
+    const password = document.getElementById('userPassword').value;
+    const role = document.getElementById('userRole').value;
+
+    if (!username || username.length < 3) {
+      showUserStatus('error', '❌ Benutzername muss min. 3 Zeichen sein');
+      return;
+    }
+
+    if (!password || password.length < 8) {
+      showUserStatus('error', '❌ Passwort muss min. 8 Zeichen sein');
+      return;
+    }
+
+    if (!role) {
+      showUserStatus('error', '❌ Rolle erforderlich');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/users/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, role }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to create user');
+      }
+
+      showUserStatus('success', '✅ Benutzer erstellt');
+      document.getElementById('createUserForm').reset();
+      loadUsers();
+    } catch (err) {
+      showUserStatus('error', `❌ ${err.message}`);
+    }
+  });
+
+  // Load on page load
+  loadUsers();
+  setInterval(loadUsers, 30000); // Refresh every 30s
+</script>
