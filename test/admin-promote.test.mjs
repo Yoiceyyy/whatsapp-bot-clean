@@ -126,6 +126,30 @@ test('!admin meldet mehrdeutige gespeicherte Gruppennamen klar zurück', async (
   assert.match(ctx.replies[0], /Mehrere gespeicherte Gruppen/);
 });
 
+test('!admin nutzt bei LID-Teilnehmern die aufgelöste PN-JID für das Update', async () => {
+  const updates = [];
+  const metas = new Map([
+    [GROUP_A, meta(GROUP_A, [
+      { id: BOT, admin: 'admin' },
+      { id: '49170123456@lid', lid: '49170123456@lid', phoneNumber: TARGET, admin: null },
+    ])],
+  ]);
+
+  await dbRun('INSERT INTO groups (jid, name, member_count, bot_is_admin, updated_at) VALUES (?, ?, ?, ?, ?)', [GROUP_A, 'LID Gruppe', 2, 1, Date.now()]);
+
+  state.sock = {
+    groupMetadata: async (groupJid) => metas.get(groupJid) || null,
+    groupParticipantsUpdate: async (groupJid, participants, action) => {
+      updates.push({ groupJid, participants, action });
+    },
+  };
+
+  const ctx = makeCtx(['49170123456']);
+  await cmd('admin').run(ctx);
+
+  assert.deepEqual(updates, [{ groupJid: GROUP_A, participants: [TARGET], action: 'promote' }]);
+});
+
 test('!unadmin nutzt dieselbe Gruppen-Auswahl und demotet nur bestehende Admins', async () => {
   const updates = [];
   const metas = new Map([

@@ -41,10 +41,15 @@ function findParticipant(meta, targetJid) {
 }
 
 function participantActionId(participant, fallback) {
-  return normalizeId(participant?.id)
-    || normalizeId(participant?.jid)
-    || normalizeId(participant?.lid)
-    || fallback;
+  const direct = [participant?.id, participant?.jid]
+    .map((raw) => normalizeId(raw))
+    .find((id) => id?.endsWith('@s.whatsapp.net'));
+  if (direct) return direct;
+
+  const resolved = [participant?.id, participant?.jid, participant?.lid]
+    .map((raw) => resolveLid(raw))
+    .find((id) => id?.endsWith('@s.whatsapp.net'));
+  return resolved || fallback;
 }
 
 async function loadGroups(groupName) {
