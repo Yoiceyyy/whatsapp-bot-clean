@@ -1,5 +1,5 @@
 // src/commands/admin-promote.js
-// Befehle: !admin, !unadmin
+// Commands: !admin, !unadmin
 // Rollen: owner only
 // Funktion: Personen in ALLEN verwalteten Gruppen zum Admin machen
 
@@ -55,9 +55,10 @@ export default [
               continue;
             }
 
-            // Prüfen, ob Bot Admin ist
+            // Prüfen ob Bot Admin ist
+            const botJid = await getBotJid();
             const botIsAdmin = meta.participants.some(
-              (p) => p.id === (await getBotJid()) && p.admin
+              (p) => p.id === botJid && p.admin
             );
 
             if (!botIsAdmin) {
@@ -65,7 +66,7 @@ export default [
               continue;
             }
 
-            // Prüfen, ob Nutzer bereits Admin ist
+            // Prüfen ob Nutzer bereits Admin ist
             const isAdmin = meta.participants.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
@@ -96,7 +97,7 @@ export default [
         ctx.reply(
           `✅ ${num} wurde in ${promoted} Gruppen zum Admin gemacht\n`
           + `❌ Fehler: ${failed}\n`
-          + `⏭️ Übersprungen: ${skipped}`
+          + `↩️ Übersprungen: ${skipped}`
         );
       } catch (err) {
         console.error('Error in admin command:', err);
@@ -107,7 +108,7 @@ export default [
 
   {
     name: 'unadmin',
-    desc: '👤 Admin-Status in allen Gruppen entziehen (owner only)',
+    desc: '🙎 Admin-Status in allen Gruppen entziehen (owner only)',
     usage: '!unadmin <Nummer>',
     ownerOnly: true,
     category: 'admin',
@@ -152,9 +153,10 @@ export default [
               continue;
             }
 
-            // Prüfen, ob Bot Admin ist
+            // Prüfen ob Bot Admin ist
+            const botJid = await getBotJid();
             const botIsAdmin = meta.participants.some(
-              (p) => p.id === (await getBotJid()) && p.admin
+              (p) => p.id === botJid && p.admin
             );
 
             if (!botIsAdmin) {
@@ -162,7 +164,7 @@ export default [
               continue;
             }
 
-            // Prüfen, ob Nutzer Admin ist
+            // Prüfen ob Nutzer Admin ist
             const isAdmin = meta.participants.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
@@ -193,7 +195,7 @@ export default [
         ctx.reply(
           `✅ ${num} wurde in ${demoted} Gruppen degradiert\n`
           + `❌ Fehler: ${failed}\n`
-          + `⏭️ Übersprungen: ${skipped}`
+          + `↩️ Übersprungen: ${skipped}`
         );
       } catch (err) {
         console.error('Error in unadmin command:', err);
