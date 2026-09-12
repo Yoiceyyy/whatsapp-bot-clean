@@ -32,13 +32,13 @@ export default [
       const jid = `${normalized}@s.whatsapp.net`;
 
       try {
-        // Alle verwalteten Gruppen abrufen
-        const groups = await dbRows(
+        // Alle verwalteten Gruppen abrufen (nutze ctx.db oder ctx.database)
+        const groups = await (ctx.db?.all?.(
           'SELECT jid FROM group_settings WHERE enabled = 1',
           []
-        );
+        ) || Promise.resolve([]));
 
-        if (!groups.length) {
+        if (!groups || !groups.length) {
           return ctx.reply('⚠️ Keine verwalteten Gruppen gefunden');
         }
 
@@ -49,16 +49,23 @@ export default [
         // In jeder Gruppe versuchen
         for (const row of groups) {
           try {
-            const meta = await getGroupMeta(row.jid);
+            // Nutze ctx.getGroupMeta oder ctx.sock.groupMetadata
+            let meta;
+            if (ctx.getGroupMeta) {
+              meta = await ctx.getGroupMeta(row.jid);
+            } else if (ctx.sock?.groupMetadata) {
+              meta = await ctx.sock.groupMetadata(row.jid);
+            }
+
             if (!meta) {
               skipped++;
               continue;
             }
 
             // Prüfen ob Bot Admin ist
-            const botJid = await getBotJid();
-            const botIsAdmin = meta.participants.some(
-              (p) => p.id === botJid && p.admin
+            const botJid = ctx.botJid || (await ctx.sock?.getBotJid?.());
+            const botIsAdmin = meta.participants?.some(
+              (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
             if (!botIsAdmin) {
@@ -67,7 +74,7 @@ export default [
             }
 
             // Prüfen ob Nutzer bereits Admin ist
-            const isAdmin = meta.participants.some(
+            const isAdmin = meta.participants?.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -76,9 +83,13 @@ export default [
               continue;
             }
 
-            // Zum Admin machen - nutze ctx.sock statt state.sock
-            await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'promote');
-            promoted++;
+            // Zum Admin machen
+            if (ctx.sock?.groupParticipantsUpdate) {
+              await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'promote');
+              promoted++;
+            } else {
+              failed++;
+            }
           } catch (err) {
             console.error(`Error promoting in group ${row.jid}:`, err);
             failed++;
@@ -86,13 +97,17 @@ export default [
         }
 
         // Audit-Log
-        await logModerationAction(
-          'admin.promote',
-          ctx.sender,
-          jid,
-          null,
-          `promote:${promoted},failed:${failed},skip:${skipped}`
-        );
+        try {
+          await logModerationAction(
+            'admin.promote',
+            ctx.sender,
+            jid,
+            null,
+            `promote:${promoted},failed:${failed},skip:${skipped}`
+          );
+        } catch (logErr) {
+          console.error('Audit log error:', logErr);
+        }
 
         ctx.reply(
           `✅ ${num} wurde in ${promoted} Gruppen zum Admin gemacht\n`
@@ -101,7 +116,7 @@ export default [
         );
       } catch (err) {
         console.error('Error in admin command:', err);
-        ctx.reply('❌ Fehler beim Durchführen der Aktion');
+        ctx.reply('❌ Fehler beim Durchführen der Aktion: ' + err.message);
       }
     },
   },
@@ -131,12 +146,12 @@ export default [
 
       try {
         // Alle verwalteten Gruppen abrufen
-        const groups = await dbRows(
+        const groups = await (ctx.db?.all?.(
           'SELECT jid FROM group_settings WHERE enabled = 1',
           []
-        );
+        ) || Promise.resolve([]));
 
-        if (!groups.length) {
+        if (!groups || !groups.length) {
           return ctx.reply('⚠️ Keine verwalteten Gruppen gefunden');
         }
 
@@ -147,16 +162,23 @@ export default [
         // In jeder Gruppe versuchen
         for (const row of groups) {
           try {
-            const meta = await getGroupMeta(row.jid);
+            // Nutze ctx.getGroupMeta oder ctx.sock.groupMetadata
+            let meta;
+            if (ctx.getGroupMeta) {
+              meta = await ctx.getGroupMeta(row.jid);
+            } else if (ctx.sock?.groupMetadata) {
+              meta = await ctx.sock.groupMetadata(row.jid);
+            }
+
             if (!meta) {
               skipped++;
               continue;
             }
 
             // Prüfen ob Bot Admin ist
-            const botJid = await getBotJid();
-            const botIsAdmin = meta.participants.some(
-              (p) => p.id === botJid && p.admin
+            const botJid = ctx.botJid || (await ctx.sock?.getBotJid?.());
+            const botIsAdmin = meta.participants?.some(
+              (p) => p.id === botJid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
             if (!botIsAdmin) {
@@ -165,7 +187,7 @@ export default [
             }
 
             // Prüfen ob Nutzer Admin ist
-            const isAdmin = meta.participants.some(
+            const isAdmin = meta.participants?.some(
               (p) => p.id === jid && (p.admin === 'admin' || p.admin === 'superadmin')
             );
 
@@ -174,9 +196,13 @@ export default [
               continue;
             }
 
-            // Admin-Status entziehen - nutze ctx.sock statt state.sock
-            await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'demote');
-            demoted++;
+            // Admin-Status entziehen
+            if (ctx.sock?.groupParticipantsUpdate) {
+              await ctx.sock.groupParticipantsUpdate(row.jid, [jid], 'demote');
+              demoted++;
+            } else {
+              failed++;
+            }
           } catch (err) {
             console.error(`Error demoting in group ${row.jid}:`, err);
             failed++;
@@ -184,13 +210,17 @@ export default [
         }
 
         // Audit-Log
-        await logModerationAction(
-          'admin.demote',
-          ctx.sender,
-          jid,
-          null,
-          `demote:${demoted},failed:${failed},skip:${skipped}`
-        );
+        try {
+          await logModerationAction(
+            'admin.demote',
+            ctx.sender,
+            jid,
+            null,
+            `demote:${demoted},failed:${failed},skip:${skipped}`
+          );
+        } catch (logErr) {
+          console.error('Audit log error:', logErr);
+        }
 
         ctx.reply(
           `✅ ${num} wurde in ${demoted} Gruppen degradiert\n`
@@ -199,7 +229,7 @@ export default [
         );
       } catch (err) {
         console.error('Error in unadmin command:', err);
-        ctx.reply('❌ Fehler beim Durchführen der Aktion');
+        ctx.reply('❌ Fehler beim Durchführen der Aktion: ' + err.message);
       }
     },
   },
